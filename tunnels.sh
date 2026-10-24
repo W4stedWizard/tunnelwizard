@@ -2,10 +2,34 @@
 set -uo pipefail
 
 # Find the script and its default config in the same directory.
-# This also works when the script is launched from another directory.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 CONFIG="${1:-$SCRIPT_DIR/tunnels.conf}"
+
+# A newly opened system-terminal window runs the script in this lightweight
+# mode. It connects directly instead of starting another tunnel dashboard.
+if [[ "${1:-}" == --connect-base64 ]]; then
+    encoded_target="${2:-}"
+
+    if [[ -z "$encoded_target" ||
+          ! "$encoded_target" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+        echo 'Invalid encoded SSH target.' >&2
+        exit 2
+    fi
+
+    if [[ "$(uname -s)" == Darwin ]]; then
+        target=$(printf '%s' "$encoded_target" | base64 -D) || exit 2
+    else
+        target=$(printf '%s' "$encoded_target" | base64 -d) || exit 2
+    fi
+
+    if [[ -z "$target" || "$target" == -* ]]; then
+        echo 'Invalid SSH target.' >&2
+        exit 2
+    fi
+
+    exec ssh "$target"
+fi
 
 CONNECT_TIMEOUT=10
 STARTUP_WAIT=1
@@ -936,37 +960,131 @@ poll_tunnels() {
     done
 }
 
+running_in_wezterm() {
+    [[ -n "${WEZTERM_PANE:-}" || "${TERM_PROGRAM:-}" == WezTerm ]]
+}
+
+open_shell_in_current_window() {
+    local target=$1
+    local name=$2
+    local ssh_status
+
+    restore_tty_mode
+    printf '\033[?25h\033[H\033[J'
+    printf 'SSH shell: %s\n\n' "$name"
+
+    ssh "$target" <&3
+    ssh_status=$?
+
+    printf '\nSSH session ended (exit status %s).\n' "$ssh_status"
+    read -r -p 'Press Enter to return to the wizard... ' _ <&3 || true
+
+    if ! set_tty_mode; then
+        EXIT_REQUESTED=1
+        return 1
+    fi
+
+    printf '\033[?25l'
+    MESSAGE=""
+    REDRAW_NEEDED=1
+    return 0
+}
+
 open_shell_window() {
     local index=$1
     local target=${SHELL_TARGETS[$index]}
     local name=${SHELL_NAMES[$index]}
-    local wezterm_bin bash_bin encoded_title
+    local wezterm_bin bash_bin bash_win workdir_win
+    local encoded_title encoded_target
 
-    if ! command -v wezterm >/dev/null 2>&1; then
-        MESSAGE='WezTerm CLI was not found in PATH.'
-        return 1
+    # Keep the original WezTerm behavior when running inside WezTerm.
+    if running_in_wezterm && command -v wezterm >/dev/null 2>&1; then
+        wezterm_bin=$(command -v wezterm)
+        bash_bin=$(command -v bash)
+
+        if command -v cygpath >/dev/null 2>&1; then
+            bash_bin=$(cygpath -w "$bash_bin")
+        fi
+
+        encoded_title=$(printf '%s' "$name" | base64 | tr -d '\r\n')
+
+        if "$wezterm_bin" cli spawn --new-window --cwd "$HOME" -- \
+            "$bash_bin" -c \
+            'printf "\033]1337;SetUserVar=SSH_WIZARD_TITLE=%s\007" "$2"; exec ssh "$1"' \
+            wizard-shell "$target" "$encoded_title" \
+            </dev/null >/dev/null 2>&1; then
+            MESSAGE="Opened '$name' in new window."
+            return 0
+        fi
+
+        # If WezTerm's CLI fails, try the system launcher below.
     fi
 
-    wezterm_bin=$(command -v wezterm)
+    # Encoding avoids inserting the SSH target into a PowerShell,
+    # AppleScript, or terminal-launcher command.
+    encoded_target=$(printf '%s' "$target" | base64 | tr -d '\r\n')
 
-    bash_bin=$(command -v bash)
-    if command -v cygpath >/dev/null 2>&1; then
-        bash_bin=$(cygpath -w "$bash_bin")
-    fi
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            # Launch Git Bash as a console program. Windows uses its
+            # configured default console terminal host for the window.
+            if command -v powershell.exe >/dev/null 2>&1 &&
+               command -v cygpath >/dev/null 2>&1; then
+                bash_bin=$(command -v bash)
+                bash_win=$(cygpath -w "$bash_bin")
+                workdir_win=$(cygpath -w "$SCRIPT_DIR")
 
-    encoded_title=$(printf '%s' "$name" | base64 | tr -d '\r\n')
+                if WIZARD_BASH_EXE="$bash_win" \
+                   WIZARD_WORKDIR="$workdir_win" \
+                   WIZARD_TARGET_B64="$encoded_target" \
+                   powershell.exe -NoProfile -NonInteractive -Command \
+                   'try { $launchArgs = "-c `"exec bash ./tunnels.sh --connect-base64 " + $env:WIZARD_TARGET_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
+                   </dev/null >/dev/null 2>&1; then
+                    MESSAGE="Opened '$name' in new window."
+                    return 0
+                fi
+            fi
+            ;;
 
-    if "$wezterm_bin" cli spawn --new-window --cwd "$HOME" -- \
-        "$bash_bin" -c \
-        'printf "\033]1337;SetUserVar=SSH_WIZARD_TITLE=%s\007" "$2"; exec ssh "$1"' \
-        wizard-shell "$target" "$encoded_title" \
-        </dev/null >/dev/null 2>&1; then
-        MESSAGE="Opened '$name' in a new WezTerm window."
-        return 0
-    fi
+        Darwin)
+            # macOS has no universal launcher for the user's preferred
+            # terminal application; use the built-in Terminal app.
+            if command -v osascript >/dev/null 2>&1; then
+                if osascript \
+                    -e 'on run argv' \
+                    -e 'tell application "Terminal"' \
+                    -e 'do script ("bash " & quoted form of (item 1 of argv) & " --connect-base64 " & item 2 of argv)' \
+                    -e 'activate' \
+                    -e 'end tell' \
+                    -e 'end run' \
+                    -- "$SCRIPT_PATH" "$encoded_target" \
+                    </dev/null >/dev/null 2>&1; then
+                    MESSAGE="Opened '$name' in new window."
+                    return 0
+                fi
+            fi
+            ;;
 
-    MESSAGE="Could not open '$name' in WezTerm."
-    return 1
+        *)
+            # Prefer the desktop's configured terminal launcher.
+            if command -v xdg-terminal-exec >/dev/null 2>&1; then
+                xdg-terminal-exec bash "$SCRIPT_PATH" \
+                    --connect-base64 "$encoded_target" \
+                    </dev/null >/dev/null 2>&1 &
+                MESSAGE="Opened '$name' in new window."
+                return 0
+            elif command -v x-terminal-emulator >/dev/null 2>&1; then
+                x-terminal-emulator -e bash "$SCRIPT_PATH" \
+                    --connect-base64 "$encoded_target" \
+                    </dev/null >/dev/null 2>&1 &
+                MESSAGE="Opened '$name' in new window."
+                return 0
+            fi
+            ;;
+    esac
+
+    # Last resort: connect without opening another terminal.
+    open_shell_in_current_window "$target" "$name"
 }
 
 read_key() {
