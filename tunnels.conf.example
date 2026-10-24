@@ -1,0 +1,24 @@
+# Copy this file to tunnels.conf in the same folder as tunnels.sh.
+# Replace the example hostnames, usernames, and forwards with your own.
+#
+# Syntax:
+#   machine ALIAS SSH_HOST SSH_USER IDENTITY_FILE GROUP
+#   tunnel  DISPLAY_NAME LOCAL_FORWARD
+#   shell   DISPLAY_NAME SSH_TARGET
+#
+# GROUP=yes: forwards for this machine share one SSH process.
+# GROUP=no:  each forward gets its own SSH process.
+#
+# Leave private keys in ~/.ssh; do not copy them into this project folder.
+
+machine example-web web.example.invalid alice ~/.ssh/id_ed25519 no
+tunnel "Web application" 8080:127.0.0.1:80
+tunnel "Web HTTPS"     8443:127.0.0.1:443
+
+machine example-dev dev.example.invalid alice ~/.ssh/id_ed25519 yes
+tunnel "Dev dashboard" 9000:127.0.0.1:9000
+tunnel "Dev database"  15432:127.0.0.1:5432
+
+# Saved shells open in separate WezTerm windows.
+shell "Web server"      alice@web.example.invalid
+shell "Development box" alice@dev.example.invalid
