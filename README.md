@@ -2,6 +2,7 @@
 
 A Bash terminal UI for starting and monitoring SSH tunnels, with saved SSH
 shell connections that open in separate terminal windows.
+<img width="740" height="532" alt="image" src="https://github.com/user-attachments/assets/3fda5091-b09d-477f-a71d-930ed86f43d7" />
 
 ## Requirements
 
