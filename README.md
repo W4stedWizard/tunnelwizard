@@ -154,14 +154,3 @@ shortcut use the simple `bash ./tunnels.sh` command.
 
 If saved shells report that the WezTerm CLI cannot be found, make sure
 the `wezterm` command is available in Git Bash's `PATH`.
-
-## Repository safety
-
-Commit `tunnels.conf.example`, not your personal `tunnels.conf`. Add this
-line to a `.gitignore` in the project folder:
-
-```gitignore
-tunnels.conf
-```
-
-Do not put private SSH keys or credentials in the repository.
