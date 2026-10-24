@@ -1,59 +1,85 @@
 # SSH Tunnel Wizard
 
-A Bash terminal UI for starting and monitoring SSH tunnels. It also displays
-saved SSH shells and can open them in separate WezTerm windows.
+A Bash terminal UI for starting and monitoring SSH tunnels, with saved SSH
+shell connections that open in separate WezTerm windows.
 
 ## Requirements
 
 - Bash
 - OpenSSH client (`ssh`)
 - An interactive terminal
-- WezTerm, with the `wezterm` command available in your Bash `PATH`, if you
-  want to open saved shells
+- WezTerm and its `wezterm` command-line tool to open saved shells
 
-## Setup
+On Windows, the setup below uses WezTerm and Git for Windows.
 
-1. Save the script as `tunnels.sh` and make it executable:
+## Get started
 
-   ```bash
-   chmod +x tunnels.sh
-   ```
+Clone the repository or download and extract its ZIP. Keep `tunnels.sh` and
+`tunnels.conf.example` in the resulting project folder.
 
-2. Copy the example config and replace its placeholder values:
+Your folder might look like this:
 
-   ```bash
-   cp tunnels.conf.example tunnels.conf
-   ```
+```text
+ssh-tunnel-wizard/
+├── README.md
+├── tunnels.sh
+├── tunnels.conf.example
+├── tunnels.conf          # Your local copy; do not commit it
+└── tunnels.lua           # Optional: your own WezTerm Lua config
+```
 
-3. Start the wizard:
+From the project folder, copy the example config:
 
-   ```bash
-   ./tunnels.sh ./tunnels.conf
-   ```
+```bash
+cp tunnels.conf.example tunnels.conf
+```
 
-Without a config argument, the script reads `~/.ssh/tunnels.conf`.
+Edit `tunnels.conf` with your own hosts, usernames, forwards, and SSH key
+paths. Then launch the wizard:
 
-> **Security:** The config file is sourced as Bash code. Only use a config
-> you trust.
+```bash
+bash ./tunnels.sh
+```
 
-## Configuration
+You can use `bash ./tunnels.sh` even if a ZIP extraction did not preserve
+the script's executable bit.
 
-Declare a machine, followed by its tunnels:
+**The default config is `tunnels.conf` next to `tunnels.sh`.** It does not
+matter which directory you launch the script from. You can also supply
+another config explicitly:
+
+```bash
+bash ./tunnels.sh /path/to/another.conf
+```
+
+An explicitly supplied relative config path is interpreted relative to your
+current working directory, as usual.
+
+> **Security:** The script sources its config as Bash code. Only use a
+> `tunnels.conf` you trust.
+
+## Configuration format
+
+Define a machine and then its tunnels:
 
 ```bash
 machine ALIAS SSH_HOST SSH_USER IDENTITY_FILE GROUP
 tunnel DISPLAY_NAME LOCAL_FORWARD
 ```
 
-- `ALIAS` is a descriptive machine name.
-- `SSH_HOST` and `SSH_USER` identify the SSH server and account.
-- `IDENTITY_FILE` is the SSH private-key path.
-- `GROUP=yes` runs that machine's forwards through one SSH process.
-- `GROUP=no` starts a separate SSH process for each forward.
-- `LOCAL_FORWARD` uses a form such as
-  `LOCAL_PORT:DEST_HOST:DEST_PORT`.
+Each `tunnel` belongs to the most recently declared `machine`.
 
-Saved SSH shells use:
+- `ALIAS`: a descriptive machine name.
+- `SSH_HOST`: the SSH server hostname or address.
+- `SSH_USER`: the SSH username.
+- `IDENTITY_FILE`: the SSH private-key path. For example,
+  `~/.ssh/id_ed25519` keeps the key outside the project folder.
+- `GROUP=yes`: share one SSH process for that machine's forwards.
+- `GROUP=no`: start a separate SSH process for each forward.
+- `LOCAL_FORWARD`: a local forward such as
+  `8080:127.0.0.1:80`.
+
+Add saved SSH shells with:
 
 ```bash
 shell DISPLAY_NAME SSH_TARGET
@@ -84,42 +110,58 @@ SSH setup. See `tunnels.conf.example` for a template.
 | `Enter` | Open the selected shell |
 | `Esc` or `Q` | Return to the start page |
 
-The start page shows up to nine shells. The `S` menu provides access to the
-full list.
+The start page shows up to nine shells. The `S` menu provides access to
+the full list.
 
 ## WezTerm
 
-Saved shells open through the `wezterm` command-line tool. Make sure
-`wezterm` is available in the `PATH` seen by the Bash process running the
-wizard.
+The wizard uses the `wezterm` command-line tool to open saved shells in new
+windows. Ensure `wezterm` is available in the `PATH` seen by the Bash process
+running the wizard. Tunnel management itself does not require WezTerm.
 
-You can use your own WezTerm Lua configuration file, or adapt
-`wezterm.lua.example`. The desktop shortcut below passes a Lua config to
-WezTerm with `--config-file`.
+If you have a custom WezTerm Lua config, you can keep a copy in the project
+folder as `tunnels.lua` and pass its path with `--config-file`, as shown below.
+Alternatively, use your existing Lua config elsewhere and adjust the path,
+or omit `--config-file` to use WezTerm's default configuration.
+
+The project folder contains the wizard and its config; your SSH private
+keys can remain in your normal `~/.ssh` directory.
 
 ## Windows desktop shortcut
 
-With WezTerm and Git for Windows installed, create a desktop shortcut and
-set its **Target** to:
+Create a desktop shortcut and set its **Target** to the following command.
+Replace `<WINDOWS_USER>` with your Windows account folder name, and adjust
+the installation paths if necessary:
 
 ```text
-"C:\Program Files\WezTerm\wezterm-gui.exe" --config-file "C:\Users\<WINDOWS_USER>\.ssh\tunnels.lua" start --cwd "C:\Users\<WINDOWS_USER>\.ssh" -- "C:\Program Files\Git\bin\bash.exe" -c "./tunnels.sh ./tunnels.conf"
+"C:\Program Files\WezTerm\wezterm-gui.exe" --config-file "C:\Users\<WINDOWS_USER>\Projects\ssh-tunnel-wizard\tunnels.lua" start --cwd "C:\Users\<WINDOWS_USER>\Projects\ssh-tunnel-wizard" -- "C:\Program Files\Git\bin\bash.exe" -c "bash ./tunnels.sh"
 ```
 
-Replace `<WINDOWS_USER>` with your Windows account folder name. Check that
-the WezTerm and Git Bash executable paths match your installations.
+This example assumes that you cloned or extracted the project to
+`C:\Users\<WINDOWS_USER>\Projects\ssh-tunnel-wizard`, put your personal
+`tunnels.conf` there, and have a Lua config named `tunnels.lua` there.
 
-This command expects `tunnels.sh` and `tunnels.conf` in your `.ssh` directory.
-If you keep them elsewhere, change `--cwd` and the Bash command accordingly.
-It also expects your Lua config at the specified `tunnels.lua` path; change
-that path or omit `--config-file` if you use WezTerm's default configuration.
+If you do **not** have a custom Lua config, remove the `--config-file`
+option and its path:
+
+```text
+"C:\Program Files\WezTerm\wezterm-gui.exe" start --cwd "C:\Users\<WINDOWS_USER>\Projects\ssh-tunnel-wizard" -- "C:\Program Files\Git\bin\bash.exe" -c "bash ./tunnels.sh"
+```
+
+The `--cwd` value makes Git Bash start in the project folder. The script
+would find its config beside itself regardless, but `--cwd` lets the
+shortcut use the simple `bash ./tunnels.sh` command.
+
+If saved shells report that the WezTerm CLI cannot be found, make sure
+the `wezterm` command is available in Git Bash's `PATH`.
 
 ## Repository safety
 
-Commit `tunnels.conf.example`, but avoid committing your real
-`tunnels.conf`, private keys, or credentials. For example, add this to
-`.gitignore` if your real config is stored in the repository directory:
+Commit `tunnels.conf.example`, not your personal `tunnels.conf`. Add this
+line to a `.gitignore` in the project folder:
 
 ```gitignore
 tunnels.conf
 ```
+
+Do not put private SSH keys or credentials in the repository.
