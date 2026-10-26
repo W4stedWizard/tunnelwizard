@@ -964,20 +964,22 @@ start_one() {
 
 start_with_retry() {
     local id=$1
-    local pid answer error_line
+    local pid=${2:-} index answer error_line
 
     while true; do
         ((EXIT_REQUESTED)) && return
 
-        STATUS["$id"]="STARTING"
-        render_dashboard
+        if [[ -z "$pid" ]]; then
+            STATUS["$id"]="STARTING"
+            render_dashboard
 
-        start_one "$id"
-        pid=${PIDS[-1]}
+            start_one "$id"
+            pid=${PIDS[-1]}
 
-        # Early-exit check, not a remote-service health check.
-        sleep "$STARTUP_WAIT"
-        ((EXIT_REQUESTED)) && return
+            # Retry check only; initial starts share a single grace period.
+            sleep "$STARTUP_WAIT"
+            ((EXIT_REQUESTED)) && return
+        fi
 
         if kill -0 "$pid" 2>/dev/null; then
             STATUS["$id"]="RUNNING"
@@ -986,7 +988,12 @@ start_with_retry() {
         fi
 
         wait "$pid" 2>/dev/null || true
-        unset 'PIDS[-1]'
+        for index in "${!PIDS[@]}"; do
+            if [[ "${PIDS[$index]}" == "$pid" ]]; then
+                unset "PIDS[$index]"
+                break
+            fi
+        done
         unset "PID_TO_TUNNEL[$pid]"
 
         STATUS["$id"]="STOPPED"
@@ -1014,7 +1021,7 @@ start_with_retry() {
         FORCE_REPAINT=1
 
         case "$answer" in
-            y|Y|yes|YES) ;;
+            y|Y|yes|YES) pid="" ;;
             *)
                 STATUS["$id"]="SKIPPED"
                 render_dashboard
@@ -1267,10 +1274,28 @@ if ! set_tty_mode; then
     exit 1
 fi
 
-for id in "${TUNNEL_IDS[@]}"; do
-    start_with_retry "$id"
+if ((${#TUNNEL_IDS[@]} > 0)); then
+    declare -A STARTUP_PIDS=()
+
+    # Launch all initial tunnels before waiting, so the early-exit grace
+    # period is shared rather than cumulative across configured tunnels.
+    for id in "${TUNNEL_IDS[@]}"; do
+        ((EXIT_REQUESTED)) && exit 130
+        STATUS["$id"]="STARTING"
+        start_one "$id"
+        STARTUP_PIDS["$id"]=${PIDS[-1]}
+    done
+
+    render_dashboard
+    # Early-exit check, not a remote-service health check.
+    sleep "$STARTUP_WAIT"
     ((EXIT_REQUESTED)) && exit 130
-done
+
+    for id in "${TUNNEL_IDS[@]}"; do
+        start_with_retry "$id" "${STARTUP_PIDS[$id]}"
+        ((EXIT_REQUESTED)) && exit 130
+    done
+fi
 
 render_screen
 
