@@ -66,6 +66,8 @@ KEY=""
 STOPPING=0
 EXIT_REQUESTED=0
 REDRAW_NEEDED=1
+FORCE_REPAINT=1
+RESIZE_EVENT=0
 USE_COLOUR=0
 ALT_SCREEN=0
 TTY_CONFIGURED=0
@@ -77,6 +79,14 @@ TERM_WIDTH=80
 TERM_HEIGHT=24
 BODY_ROW=1
 BODY_LAST_ROW=1
+PAINTED_MODE=""
+PAINTED_WIDTH=0
+PAINTED_HEIGHT=0
+declare -a ROW_CACHE=()
+declare -a ROW_CACHE_VALID=()
+declare -a ROW_SEEN=()
+RENDER_BUFFER=""
+RENDER_CAPTURE_FILE=""
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     USE_COLOUR=1
@@ -308,22 +318,86 @@ render_header() {
 }
 
 # Draw individual rows by cursor position so the controls stay at the
-# bottom, even when there are many tunnels or saved shells.
+# bottom, even when there are many tunnels or saved shells. Cache the
+# complete rendered row (including colour codes), not just its text.
 begin_screen() {
     local footer_rows=$1
+    local force_clear=0
 
     TERM_WIDTH=$(terminal_width)
     TERM_HEIGHT=$(terminal_height)
     BODY_ROW=1
     BODY_LAST_ROW=$((TERM_HEIGHT - footer_rows))
+    ROW_SEEN=()
+    RENDER_BUFFER=""
 
-    printf '\033[H\033[J'
+    if ((FORCE_REPAINT)) || [[ "$PAINTED_MODE" != "$UI_MODE" ]] ||
+       ((TERM_WIDTH != PAINTED_WIDTH || TERM_HEIGHT != PAINTED_HEIGHT)); then
+        force_clear=1
+        ROW_CACHE=()
+        ROW_CACHE_VALID=()
+    fi
+
+    RENDER_CAPTURE_FILE=$(mktemp "${TMPDIR:-/tmp}/ssh-tunnel-render.XXXXXX") || return 1
+
+    if ((force_clear)); then
+        RENDER_BUFFER=$'\033[H\033[J'
+    fi
+
+    PAINTED_MODE=$UI_MODE
+    PAINTED_WIDTH=$TERM_WIDTH
+    PAINTED_HEIGHT=$TERM_HEIGHT
+    FORCE_REPAINT=0
+}
+
+paint_row() {
+    local row=$1 content render_status=0
+    shift
+
+    "$@" >"$RENDER_CAPTURE_FILE" || render_status=$?
+    content=$(<"$RENDER_CAPTURE_FILE")
+    ROW_SEEN[$row]=1
+
+    if ((render_status != 0)); then
+        return "$render_status"
+    fi
+
+    if [[ ${ROW_CACHE_VALID[$row]:-0} == 1 && "${ROW_CACHE[$row]}" == "$content" ]]; then
+        return
+    fi
+
+    # Clear only changed rows; reset attributes before erasing a coloured
+    # row so shorter replacement text cannot leave a styled tail behind.
+    RENDER_BUFFER+="$(printf '\033[%d;1H\033[0m\033[2K%s' "$row" "$content")"
+    ROW_CACHE[$row]=$content
+    ROW_CACHE_VALID[$row]=1
+}
+
+finish_screen() {
+    local row
+
+    # Rows left over from a longer body or a moved footer must also go.
+    for row in "${!ROW_CACHE[@]}"; do
+        if [[ ! ${ROW_SEEN[$row]+present} ]]; then
+            if [[ -n "${ROW_CACHE[$row]}" ]]; then
+                RENDER_BUFFER+="$(printf '\033[%d;1H\033[0m\033[2K' "$row")"
+            fi
+            unset "ROW_CACHE[$row]"
+            unset "ROW_CACHE_VALID[$row]"
+        fi
+    done
+
+    printf '%s' "$RENDER_BUFFER"
+    if [[ -n "$RENDER_CAPTURE_FILE" ]]; then
+        rm -f -- "$RENDER_CAPTURE_FILE"
+        RENDER_CAPTURE_FILE=""
+    fi
+    RENDER_BUFFER=""
 }
 
 body_line() {
     if ((BODY_ROW >= 1 && BODY_ROW <= BODY_LAST_ROW)); then
-        printf '\033[%d;1H' "$BODY_ROW"
-        "$@"
+        paint_row "$BODY_ROW" "$@"
     fi
 
     BODY_ROW=$((BODY_ROW + 1))
@@ -334,8 +408,7 @@ footer_at() {
     shift
 
     if ((row >= 1 && row <= TERM_HEIGHT)); then
-        printf '\033[%d;1H' "$row"
-        "$@"
+        paint_row "$row" "$@"
     fi
 }
 
@@ -625,6 +698,7 @@ render_dashboard() {
     fi
 
     render_dashboard_footer
+    finish_screen
 }
 
 render_menu_footer() {
@@ -723,16 +797,22 @@ render_shell_menu() {
     fi
 
     render_menu_footer
+    finish_screen
 }
 
 render_screen() {
+    local resize_event=$RESIZE_EVENT
+
     if [[ "$UI_MODE" == menu ]]; then
         render_shell_menu
     else
         render_dashboard
     fi
 
-    REDRAW_NEEDED=0
+    # A resize delivered during a render still needs its own full repaint.
+    if ((RESIZE_EVENT == resize_event)); then
+        REDRAW_NEEDED=0
+    fi
 }
 
 # Move horizontally within the current row, wrapping at its edges.
@@ -831,6 +911,11 @@ cleanup() {
 
     stop_tunnels
 
+    if [[ -n "$RENDER_CAPTURE_FILE" ]]; then
+        rm -f -- "$RENDER_CAPTURE_FILE"
+        RENDER_CAPTURE_FILE=""
+    fi
+
     if [[ -n "$LOG_DIR" && -d "$LOG_DIR" ]]; then
         rm -rf -- "$LOG_DIR"
     fi
@@ -850,7 +935,7 @@ cleanup() {
 
 trap cleanup EXIT
 trap 'EXIT_REQUESTED=1' INT TERM
-trap 'REDRAW_NEEDED=1' WINCH
+trap 'RESIZE_EVENT=$((RESIZE_EVENT + 1)); FORCE_REPAINT=1; REDRAW_NEEDED=1' WINCH
 
 start_one() {
     local id=$1
