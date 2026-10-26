@@ -1011,6 +1011,7 @@ start_with_retry() {
 
         printf '\033[?25l'
         set_tty_mode || return
+        FORCE_REPAINT=1
 
         case "$answer" in
             y|Y|yes|YES) ;;
@@ -1071,6 +1072,7 @@ open_shell_in_current_window() {
 
     printf '\033[?25l'
     MESSAGE=""
+    FORCE_REPAINT=1
     REDRAW_NEEDED=1
     return 0
 }
