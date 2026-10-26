@@ -5,6 +5,21 @@ set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 CONFIG="${1:-$SCRIPT_DIR/tunnels.conf}"
+SSH_CONFIG_FILE="$SCRIPT_DIR/ssh_config"
+
+if [[ -e "$SSH_CONFIG_FILE" &&
+      ( ! -f "$SSH_CONFIG_FILE" || ! -r "$SSH_CONFIG_FILE" ) ]]; then
+    echo "SSH config must be a readable regular file: $SSH_CONFIG_FILE" >&2
+    exit 1
+fi
+
+ssh_with_config() {
+    if [[ -f "$SSH_CONFIG_FILE" ]]; then
+        command ssh -F "$SSH_CONFIG_FILE" "$@"
+    else
+        command ssh "$@"
+    fi
+}
 
 # A newly opened system-terminal window runs the script in this lightweight
 # mode. It connects directly instead of starting another tunnel dashboard.
@@ -28,6 +43,9 @@ if [[ "${1:-}" == --connect-base64 ]]; then
         exit 2
     fi
 
+    if [[ -f "$SSH_CONFIG_FILE" ]]; then
+        exec ssh -F "$SSH_CONFIG_FILE" "$target"
+    fi
     exec ssh "$target"
 fi
 
@@ -950,6 +968,10 @@ start_one() {
         -l "${SSH_USER[$id]}"
     )
 
+    if [[ -f "$SSH_CONFIG_FILE" ]]; then
+        ssh_args=( -F "$SSH_CONFIG_FILE" "${ssh_args[@]}" )
+    fi
+
     for ((index = 0; index < FORWARD_COUNT[$id]; index++)); do
         ssh_args+=( -L "${FORWARD[$id:$index]}" )
     done
@@ -1066,7 +1088,7 @@ open_shell_in_current_window() {
     printf '\033[?25h\033[H\033[J'
     printf 'SSH shell: %s\n\n' "$name"
 
-    ssh "$target" <&3
+    ssh_with_config "$target" <&3
     ssh_status=$?
 
     printf '\nSSH session ended (exit status %s).\n' "$ssh_status"
@@ -1104,8 +1126,8 @@ open_shell_window() {
 
         if "$wezterm_bin" cli spawn --new-window --cwd "$HOME" -- \
             "$bash_bin" -c \
-            'printf "\033]1337;SetUserVar=SSH_WIZARD_TITLE=%s\007" "$2"; exec ssh "$1"' \
-            wizard-shell "$target" "$encoded_title" \
+            'printf "\033]1337;SetUserVar=SSH_WIZARD_TITLE=%s\007" "$2"; if [[ -f "$3" ]]; then exec ssh -F "$3" "$1"; else exec ssh "$1"; fi' \
+            wizard-shell "$target" "$encoded_title" "$SSH_CONFIG_FILE" \
             </dev/null >/dev/null 2>&1; then
             MESSAGE="Opened '$name' in new window."
             return 0

@@ -1,0 +1,20 @@
+# Copy this file to ssh_config beside tunnels.sh to enable it.
+# OpenSSH client configuration reference:
+# https://man.openbsd.org/ssh_config
+#
+# When ssh_config exists, TunnelWizard passes it with -F to its tunnel and
+# saved-shell SSH commands. This replaces normal user and system SSH configs.
+# Uncomment the next line if you want to include your usual per-user config:
+# Include ~/.ssh/config
+
+# Example alias; use "bastion" as SSH_HOST or SSH_TARGET in tunnels.conf.
+# Host bastion
+#     HostName bastion.example.net
+#     User alice
+#     IdentityFile ~/.ssh/id_ed25519
+#     IdentitiesOnly yes
+#
+# Example options for all hosts:
+Host *
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
