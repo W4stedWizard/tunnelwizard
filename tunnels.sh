@@ -851,9 +851,8 @@ render_shell_cell() {
     printf -v padded_name '%-*s' "$name_width" "$name"
 
     if ((index == SHELL_SELECTION)); then
-        # Dark-grey background (#4B4B52), with the cyan marker
-        # and purple number/name.
-        colour '1;36;48;2;75;75;82' "$marker"
+        # Dark-grey background (#4B4B52), with purple selection accents.
+        colour '1;38;2;184;127;242;48;2;75;75;82' "$marker"
         colour '1;38;2;184;127;242;48;2;75;75;82' \
             " $hotkey $padded_name"
     else
