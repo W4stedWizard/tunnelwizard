@@ -565,7 +565,15 @@ render_header_line() {
     local title='  ✦ SSH TUNNEL WIZARD ✦  '
     local subtitle='  Your tunnels, conjured and watched over.'
     local max=$((TERM_WIDTH - 1))
-    local remaining shown fade_count index glyph style
+    local remaining shown padding fade_width=6 text_width index style
+    local -a fade_styles=(
+        '48;2;42;24;64'
+        '48;2;34;19;51'
+        '48;2;25;14;38'
+        '48;2;17;10;26'
+        '48;2;8;5;13'
+        '48;2;0;0;0'
+    )
 
     ((max > 0)) || return
 
@@ -588,18 +596,21 @@ render_header_line() {
     remaining=$((remaining - ${#title}))
 
     if ((remaining > 0)); then
-        shown=$(truncate_text "$subtitle" "$remaining")
-        colour '38;2;204;181;247;48;2;42;24;64' \
-            "$shown"
-        fade_count=$((remaining - ${#shown}))
-        for ((index = 0; index < fade_count; index++)); do
-            case $((index % 3)) in
-                0) glyph='▓'; style='38;2;204;181;247;48;2;42;24;64' ;;
-                1) glyph='▒'; style='38;2;137;112;177;48;2;42;24;64' ;;
-                2) glyph='░'; style='38;2;87;70;116;48;2;42;24;64' ;;
-            esac
-            colour "$style" "$glyph"
-        done
+        if ((remaining >= fade_width)); then
+            text_width=$((remaining - fade_width))
+            if ((text_width > 0)); then
+                shown=$(truncate_text "$subtitle" "$text_width")
+                printf -v padding '%*s' "$((text_width - ${#shown}))" ''
+                colour '38;2;204;181;247;48;2;42;24;64' "${shown}${padding}"
+            fi
+            for index in "${!fade_styles[@]}"; do
+                style=${fade_styles[$index]}
+                colour "$style" ' '
+            done
+        else
+            shown=$(truncate_text "$subtitle" "$remaining")
+            colour '38;2;204;181;247;48;2;42;24;64' "$shown"
+        fi
     fi
 }
 
@@ -793,7 +804,7 @@ render_tunnel_label() {
         output+="${plain:cursor:start-cursor}"
         highlight_length=$length
         ((highlight_length > keep_width - start)) && highlight_length=$((keep_width - start))
-        output+="$(colour '1;38;2;205;205;215' "${plain:start:highlight_length}")"
+        output+="$(colour '1;38;2;255;255;255' "${plain:start:highlight_length}")"
         cursor=$((start + highlight_length))
     done
     output+="${plain:cursor:keep_width-cursor}"

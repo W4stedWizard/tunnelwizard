@@ -114,6 +114,10 @@ Each `tunnel` belongs to the most recently declared `machine`.
   then becomes the hostname's address. Existing two-argument tunnels remain
   unchanged. Non-loopback binds and hostname/address collisions are rejected.
 
+When configured, the dashboard displays each local hostname beside its forward
+in bright text. This reflects the config only; it does not indicate whether a
+matching hosts-file or DNS entry is installed.
+
 ### Local hostnames and Windows hosts file
 
 The Windows hosts-file UI is **off by default**. Add `hosts_management yes` to
