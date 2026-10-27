@@ -1,8 +1,8 @@
 # TunnelWizard's Windows-only hosts manager. Never accepts a destination path:
 # the only file this helper can change is the real Windows hosts file.
 param(
-    [ValidateSet('Preview', 'Commit', 'Elevated')][string]$Mode = 'Preview',
-    [ValidateSet('Sync', 'Remove')][string]$Action = 'Sync',
+    [ValidateSet('Check', 'Preview', 'Commit', 'Elevated')][string]$Mode = 'Preview',
+    [ValidateSet('Sync', 'Remove', 'RemoveAll')][string]$Action = 'Sync',
     [string]$ExpectedHash = '',
     [string]$Payload = '',
     [string]$PayloadRoot = ''
@@ -125,13 +125,92 @@ function Read-Hosts {
         Hash = $hash; Newline = $newline; Text = $text }
 }
 
+function Get-HostsPresence($state, [object[]]$entries) {
+    # Inspect the actual hosts mappings, including manually maintained lines.
+    # A second mapping to a different address makes the name conflicting.
+    $expected = @{}
+    $found = @{}
+    $conflicting = @{}
+    foreach ($entry in $entries) { $expected[$entry.Name] = $entry.IP }
+    foreach ($line in $state.Lines) {
+        if ($line.Value -notmatch '^\s*([^\s#]+)\s+([^#]+)') { continue }
+        $address = $Matches[1]
+        $aliases = $Matches[2].Trim() -split '\s+'
+        $parsed = $null
+        if ([Net.IPAddress]::TryParse($address, [ref]$parsed)) {
+            $address = $parsed.ToString()
+        }
+        foreach ($alias in $aliases) {
+            $name = $alias.ToLowerInvariant()
+            if (-not $expected.ContainsKey($name)) { continue }
+            if ($address -ceq $expected[$name]) { $found[$name] = $true }
+            else { $conflicting[$name] = $true }
+        }
+    }
+    $result = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($entry in $entries) {
+        $status = 'ABSENT'
+        if ($conflicting.ContainsKey($entry.Name)) {
+            $status = 'CONFLICT'
+        } elseif ($found.ContainsKey($entry.Name)) {
+            $status = 'PRESENT'
+        }
+        $result.Add([pscustomobject]@{ Name = $entry.Name; Status = $status })
+    }
+    return ,$result.ToArray()
+}
+
+function Get-DiffRows([string[]]$before, [string[]]$after) {
+    # LCS retains matching lines (including markers) in their original order.
+    $n = $before.Length
+    $m = $after.Length
+    $lcs = [int[,]]::new($n + 1, $m + 1)
+    for ($i = $n - 1; $i -ge 0; $i--) {
+        for ($j = $m - 1; $j -ge 0; $j--) {
+            $nextI = $i + 1
+            $nextJ = $j + 1
+            if ($before[$i] -ceq $after[$j]) {
+                $lcs.SetValue(($lcs.GetValue($nextI, $nextJ) + 1), $i, $j)
+            } else {
+                $length = [math]::Max($lcs.GetValue($nextI, $j), $lcs.GetValue($i, $nextJ))
+                $lcs.SetValue($length, $i, $j)
+            }
+        }
+    }
+    $rows = New-Object 'System.Collections.Generic.List[object]'
+    $i = 0
+    $j = 0
+    while ($i -lt $n -or $j -lt $m) {
+        $nextI = $i + 1
+        $nextJ = $j + 1
+        if ($i -lt $n -and $j -lt $m -and $before[$i] -ceq $after[$j]) {
+            $rows.Add([pscustomobject]@{ Kind = 'Equal'; Text = $before[$i] })
+            $i++
+            $j++
+        } elseif ($i -lt $n -and ($j -eq $m -or
+            $lcs.GetValue($nextI, $j) -ge $lcs.GetValue($i, $nextJ))) {
+            $rows.Add([pscustomobject]@{ Kind = 'Remove'; Text = $before[$i] })
+            $i++
+        } else {
+            $rows.Add([pscustomobject]@{ Kind = 'Add'; Text = $after[$j] })
+            $j++
+        }
+    }
+    return ,$rows.ToArray()
+}
+
 function New-Plan($state, $context, [object[]]$entries, [string]$operation) {
+    if ($operation -notin @('Sync', 'Remove', 'RemoveAll') -or
+        ($operation -ne 'Sync' -and $entries.Length -ne 0)) {
+        throw 'Invalid hosts operation or entries.'
+    }
     $begin = '# TunnelWizard BEGIN hosts {0} {1}' -f $context.Label, $context.Key
     $end = '# TunnelWizard END hosts {0} {1}' -f $context.Label, $context.Key
     $start = -1
     $finish = -1
     $open = $null
     $seen = @{}
+    $blocks = New-Object 'System.Collections.Generic.List[object]'
     $outsideNames = @{}
     $outsideIps = @{}
     $blockNames = @{}
@@ -146,8 +225,12 @@ function New-Plan($state, $context, [object[]]$entries, [string]$operation) {
                 if ($null -ne $open -or $seen.ContainsKey($key)) { throw 'Nested or duplicate TunnelWizard block.' }
                 $seen[$key] = $true
                 $open = [pscustomobject]@{ Key = $key; Label = $label; Start = $lineNumber }
+                $blockNames = @{}
+                $blockIps = @{}
                 if ($key -eq $context.Key) {
-                    if ($text -cne $begin) { throw 'Config marker label does not match this config path.' }
+                    if ($text -cne $begin -and $operation -ne 'RemoveAll') {
+                        throw 'Config marker label does not match this config path.'
+                    }
                     $start = $lineNumber
                 }
             } else {
@@ -155,6 +238,7 @@ function New-Plan($state, $context, [object[]]$entries, [string]$operation) {
                     throw 'Unmatched or mismatched TunnelWizard marker.'
                 }
                 if ($key -eq $context.Key) { $finish = $lineNumber }
+                $blocks.Add([pscustomobject]@{ Key = $key; Start = $open.Start; Finish = $lineNumber })
                 $open = $null
             }
         } elseif ($null -ne $open) {
@@ -186,13 +270,10 @@ function New-Plan($state, $context, [object[]]$entries, [string]$operation) {
     if ($null -ne $open -or ($start -ge 0 -and $finish -lt 0)) {
         throw 'Unclosed TunnelWizard block.'
     }
-    # All other managed blocks are also checked, regardless of their order.
+    # All managed blocks have already been validated, regardless of their order.
     foreach ($entry in $entries) {
         if ($outsideNames.ContainsKey($entry.Name) -or $outsideIps.ContainsKey($entry.IP)) {
             throw "Hosts entry outside this config already uses $($entry.Name) or $($entry.IP)."
-        }
-        if ($start -lt 0 -and ($blockNames.ContainsKey($entry.Name) -or $blockIps.ContainsKey($entry.IP))) {
-            throw "Another config already uses $($entry.Name) or $($entry.IP)."
         }
     }
     # Re-scan other blocks; own old entries may be removed during sync.
@@ -222,12 +303,42 @@ function New-Plan($state, $context, [object[]]$entries, [string]$operation) {
         $added.Add($end)
     }
     $removed = New-Object 'System.Collections.Generic.List[string]'
+    $diff = New-Object 'System.Collections.Generic.List[object]'
     $output = New-Object Text.StringBuilder
+    $targets = @{}
+    foreach ($block in $blocks) {
+        if ($operation -eq 'RemoveAll' -or $block.Key -eq $context.Key) {
+            $targets[$block.Start] = $block
+        }
+    }
     for ($i = 0; $i -lt $state.Lines.Length; $i++) {
-        if ($i -eq $start) {
-            for ($j = $start; $j -le $finish; $j++) { $removed.Add($state.Lines[$j].Value) }
-            foreach ($newLine in $added) { [void]$output.Append($newLine + $state.Newline) }
-            $i = $finish
+        if ($targets.ContainsKey($i)) {
+            $block = $targets[$i]
+            $oldLines = New-Object 'System.Collections.Generic.List[string]'
+            for ($j = $i; $j -le $block.Finish; $j++) {
+                $oldLines.Add($state.Lines[$j].Value)
+                $removed.Add($state.Lines[$j].Value)
+            }
+            $newLines = [string[]]@()
+            if ($operation -eq 'Sync') {
+                $newLines = $added.ToArray()
+                $sameLines = ($oldLines.Count -eq $newLines.Length)
+                if ($sameLines) {
+                    for ($j = 0; $j -lt $newLines.Length; $j++) {
+                        if ($oldLines[$j] -cne $newLines[$j]) { $sameLines = $false; break }
+                    }
+                }
+                if ($sameLines) {
+                    # A visually unchanged sync must not rewrite mixed line endings.
+                    for ($j = $i; $j -le $block.Finish; $j++) {
+                        [void]$output.Append($state.Lines[$j].Raw)
+                    }
+                } else {
+                    foreach ($newLine in $added) { [void]$output.Append($newLine + $state.Newline) }
+                }
+            }
+            foreach ($row in (Get-DiffRows ($oldLines.ToArray()) $newLines)) { $diff.Add($row) }
+            $i = $block.Finish
         } else { [void]$output.Append($state.Lines[$i].Raw) }
     }
     if ($start -lt 0 -and $added.Count -gt 0) {
@@ -235,9 +346,11 @@ function New-Plan($state, $context, [object[]]$entries, [string]$operation) {
             throw 'Hosts file has no final newline; add one manually before appending a block.'
         }
         foreach ($newLine in $added) { [void]$output.Append($newLine + $state.Newline) }
+        foreach ($row in (Get-DiffRows ([string[]]@()) ($added.ToArray()))) { $diff.Add($row) }
     }
     return [pscustomobject]@{ Text = $output.ToString(); Added = $added.ToArray();
-        Removed = $removed.ToArray(); Changed = ($output.ToString() -cne $state.Text) }
+        Removed = $removed.ToArray(); Diff = $diff.ToArray();
+        Changed = ($output.ToString() -cne $state.Text) }
 }
 
 function Write-Hosts($state, $plan) {
@@ -273,6 +386,9 @@ function Write-Hosts($state, $plan) {
 }
 
 try {
+    if ($Mode -eq 'Check' -and $Action -ne 'Sync') {
+        throw 'Check only supports read-only Sync presence inspection.'
+    }
     if ($Mode -eq 'Elevated') {
         $tempRoot = [IO.Path]::GetFullPath($PayloadRoot)
         $tempRootPrefix = $tempRoot.TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
@@ -288,7 +404,7 @@ try {
         $request = [IO.File]::ReadAllText($payloadPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
         $Action = [string]$request.Action
         $ExpectedHash = [string]$request.Hash
-        if ($Action -notin @('Sync', 'Remove')) { throw 'Invalid operation.' }
+        if ($Action -notin @('Sync', 'Remove', 'RemoveAll')) { throw 'Invalid operation.' }
         $path = [string]$request.Path
         # Windows PowerShell 5.1 deserializes JSON [] as $null.
         if ($null -eq $request.Entries) { $items = @() }
@@ -308,16 +424,29 @@ try {
     $context = Get-Context $path
     $entries = Get-Entries $items
     $state = Read-Hosts
+    if ($Mode -eq 'Check') {
+        foreach ($item in (Get-HostsPresence $state $entries)) {
+            Write-Output "HOST|$($item.Status)|$($item.Name)"
+        }
+        exit 0
+    }
     if ($Mode -ne 'Preview' -and $state.Hash -cne $ExpectedHash) {
         throw 'Hosts file changed since preview; review again before applying.'
     }
     $plan = New-Plan $state $context $entries $Action
     if ($Mode -eq 'Preview') {
-        Write-Output "Config block: $($context.Label) ($($context.Key))"
-        Write-Output "Operation: $Action"
+        if ($Action -eq 'RemoveAll') {
+            Write-Output 'Operation: DELETE ALL TunnelWizard-managed blocks across ALL configs'
+        } else {
+            Write-Output "Config block: $($context.Label) ($($context.Key))"
+            if ($Action -eq 'Sync') {
+                Write-Output 'Operation: Apply configured hostnames (this config only)'
+            } else {
+                Write-Output 'Operation: Delete managed block (this config only)'
+            }
+        }
         if (-not $plan.Changed) { Write-Output 'No changes needed.' }
-        foreach ($line in $plan.Removed) { Write-Output "- $line" }
-        foreach ($line in $plan.Added) { Write-Output "+ $line" }
+        foreach ($row in $plan.Diff) { Write-Output "DIFF|$($row.Kind)|$($row.Text)" }
         Write-Output "SNAPSHOT=$($state.Hash)"
         exit 0
     }

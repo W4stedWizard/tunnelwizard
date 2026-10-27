@@ -122,22 +122,49 @@ matching hosts-file or DNS entry is installed.
 
 The Windows hosts-file UI is **off by default**. Add `hosts_management yes` to
 the selected `.conf` to make the `H` menu available. Opting in does **not**
-change hosts on startup, when restarting tunnels, or on exit. In the `H` menu,
-choose `A` to preview the exact lines removed and added when syncing this
-config's aliases; confirm to request a one-time UAC prompt for only the hosts
-edit. Choose `R` to preview and remove **this config's** block, including stale
-aliases after editing your config. Edits persist after closing the wizard;
-removal is also manual. UAC cancellation leaves hosts unchanged. An edit
-checks for conflicts and fails if hosts changed after preview; preview again.
+change hosts on startup, when restarting tunnels, or on exit. The `H` page
+labels its IP / HOSTNAME table with the selected config filename (without a
+  trailing `.conf`) and warns that hosts entries **persist after exit**. Its
+  controls and the `Mapped | Absent | Conflict` legend are at the bottom. On
+  opening the Hosts page, an **automatic, read-only check** looks at the actual
+  Windows hosts file: bold purple hostnames and IPs have an exact,
+  conflict-free mapping to the configured loopback IP; grey means absent; amber
+  means the hostname also maps to a different address. Subtle alternating row
+  backgrounds aid scanning. A matching alias maintained by hand also counts as
+  mapped. This check does not write hosts, flush DNS, or request administrator
+  privileges. Presence is checked again after each hosts action; a read failure
+  leaves names grey and shows a warning. The colors describe hosts-file
+  mappings, **not** DNS cache state or whether an SSH tunnel is running.
+
+Choose `A` to **Apply** (preview and sync **this config's** aliases), or `D`
+to preview and delete **this config's** managed block (including stale aliases
+after editing the config). The preview is an ordered, colored diff: grey lines
+are unchanged, red lines are removed, and green lines are added; markers
+appear alongside the entries. No-op previews make no edit and do not flush DNS.
+
+**`Ctrl+D` is a separate, all-config cleanup action.** It previews deletion of
+**ALL well-formed TunnelWizard-managed blocks across every config**, not just
+the selected config. It does not delete unrelated hosts-file lines, but it
+*will* remove the aliases managed by other TunnelWizard configs, even if you
+are currently viewing a different config. Review the full preview and
+explicitly confirm the all-config removal before any edit or UAC prompt.
+`D` never performs this global cleanup. Every edit requires an explicit
+confirmation after preview; the final prompt warns that administrator/UAC
+permission will be requested to make the edit. Cancellation, including UAC
+cancellation, leaves hosts unchanged. Hosts edits persist after closing the
+wizard, and removal is always manual. If the hosts file changes after preview,
+the operation refuses to apply; preview again.
 
 Each config owns one marked block identified by a hash of its canonical full
 path; the marker also shows its filename. Two configs with the same filename
 in different directories do not share a block. The helper refuses malformed
-blocks and hostname/loopback conflicts outside the current block and preserves
-other configs' blocks and unrelated hosts lines. Only the confirmed hosts
-operation elevates; neither the wizard nor SSH runs as administrator. After
-**successful edits**, the helper runs `ipconfig /flushdns` automatically and
-reports separately if flushing fails. No network reboot is required.
+blocks; syncing also refuses hostname/loopback conflicts outside the current
+block. Per-config actions preserve other configs' blocks; the all-config
+action removes all valid marked blocks but preserves unrelated hosts lines and
+their encoding. Only the confirmed hosts operation elevates; neither the
+wizard nor SSH runs as administrator. After **successful edits**, the helper
+runs `ipconfig /flushdns` automatically and reports separately if flushing
+fails. No network reboot is required.
 
 For example, both Proxmox nodes may use local port 443 to reach their remote
 port 8006, while browsing distinct local hostnames:
@@ -150,7 +177,7 @@ machine proxmox-two pmx-two.example.invalid alice ~/.ssh/id_ed25519 no
 tunnel "Proxmox two" 443:127.0.0.1:8006 pmx-two
 ```
 
-After confirming `H` → `A`, use `https://pmx-one` and `https://pmx-two`.
+After confirming `H` → `A` (Apply), use `https://pmx-one` and `https://pmx-two`.
 Alternatively use `8006:127.0.0.1:8006 pmx-one` to browse
 `https://pmx-one:8006`. Your browser may warn that a Proxmox certificate does
 not match the local alias; configure a trusted matching certificate if needed.
@@ -161,7 +188,8 @@ without enabling hosts management.
 
 Focused checks are available with `bash tests/test-hostnames.sh`; on Windows,
 run `powershell.exe -NoProfile -File tests/test-hosts-plan.ps1` for in-memory
-hosts-block planning tests. These checks never edit the real hosts file.
+hosts-presence and block-planning tests. These checks never edit the real
+hosts file.
 
 Add saved SSH shells with:
 
@@ -199,8 +227,9 @@ setup. See `tunnels.conf.example` for a template.
 
 | Key | Action |
 | --- | --- |
-| `A` | Preview and explicitly confirm sync of this config's aliases |
-| `R` | Preview and explicitly confirm removal of this config's block |
+| `A` | Apply: preview and explicitly confirm sync of this config's aliases |
+| `D` | Preview and explicitly confirm deletion of this config's host block |
+| `Ctrl+D` | Preview and explicitly confirm deletion of **all** TunnelWizard host blocks across **every** config |
 | `Esc` or `Q` | Return to the start page |
 
 The start page shows up to nine shells. The `S` menu provides access to

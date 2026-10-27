@@ -60,6 +60,7 @@ declare -a LOCAL_HOSTNAMES=()
 declare -a LOCAL_ADDRESSES=()
 declare -A HOSTNAME_IP=()
 declare -A IP_HOSTNAME=()
+declare -A HOSTS_PRESENCE=()
 
 declare -A LABEL=()
 declare -A SSH_HOST=()
@@ -851,9 +852,9 @@ render_shell_cell() {
 
     if ((index == SHELL_SELECTION)); then
         # Dark-grey background (#4B4B52), with the cyan marker
-        # and pink number/name.
+        # and purple number/name.
         colour '1;36;48;2;75;75;82' "$marker"
-        colour '1;35;48;2;75;75;82' \
+        colour '1;38;2;184;127;242;48;2;75;75;82' \
             " $hotkey $padded_name"
     else
         printf '%s %s %s' "$marker" "$hotkey" "$padded_name"
@@ -1105,69 +1106,247 @@ render_shell_menu() {
 }
 
 render_hosts_menu() {
-    local footer_rows=1 index
-    [[ -n "$MESSAGE" ]] && footer_rows=2
+    local footer_rows=2 index config_name
+    config_name=${CONFIG##*/}
+    [[ "$config_name" == *.conf && "$config_name" != .conf ]] && config_name=${config_name%.conf}
+    TERM_WIDTH=$(terminal_width)
+    if is_windows_shell && ((TERM_WIDTH < 96)); then
+        footer_rows=3
+    fi
+    [[ -n "$MESSAGE" ]] && footer_rows=$((footer_rows + 1))
     begin_screen "$footer_rows"
     body_line render_header_line
     body_line :
     if is_windows_shell; then
-        body_line print_clipped_line '  WINDOWS HOSTS · CURRENT CONFIG'
+        body_line print_clipped_line "  WINDOWS HOSTS · $config_name"
     else
-        body_line print_clipped_line '  LOCAL HOSTNAMES · CURRENT CONFIG'
+        body_line print_clipped_line "  LOCAL HOSTNAMES · $config_name"
     fi
     body_line render_rule
-    body_line print_clipped_line '  Entries persist after exiting the wizard.'
-    if is_windows_shell; then
-        body_line print_clipped_line '  A: preview and sync this config only'
-        body_line print_clipped_line '  R: preview and remove this config block only'
-    else
+    body_line render_hosts_warning
+    if ! is_windows_shell; then
         body_line print_clipped_line '  Hosts-file sync is Windows-only; forwards remain local.'
     fi
+    body_line render_hosts_heading
+    body_line render_rule
     if ((${#LOCAL_HOSTNAMES[@]} == 0)); then
         body_line print_clipped_line '  No local hostnames are configured in this config.'
     fi
-    body_line :
     for index in "${!LOCAL_HOSTNAMES[@]}"; do
-        body_line print_clipped_line "  ${LOCAL_ADDRESSES[$index]}  ${LOCAL_HOSTNAMES[$index]}"
+        body_line render_hosts_row "${LOCAL_ADDRESSES[$index]}" \
+            "${LOCAL_HOSTNAMES[$index]}" data "$((index % 2))"
     done
-    [[ -n "$MESSAGE" ]] && footer_at "$((TERM_HEIGHT - 1))" render_message
+    [[ -n "$MESSAGE" ]] && footer_at "$((TERM_HEIGHT - footer_rows + 1))" render_message
     if is_windows_shell; then
-        footer_at "$TERM_HEIGHT" render_hosts_controls
+        if ((TERM_WIDTH < 96)); then
+            footer_at "$((TERM_HEIGHT - 2))" render_hosts_legend
+            footer_at "$((TERM_HEIGHT - 1))" render_hosts_controls_short
+            footer_at "$TERM_HEIGHT" render_hosts_controls_return
+        else
+            footer_at "$((TERM_HEIGHT - 1))" render_hosts_legend
+            footer_at "$TERM_HEIGHT" render_hosts_controls
+        fi
     else
+        footer_at "$((TERM_HEIGHT - 1))" render_hosts_legend
         footer_at "$TERM_HEIGHT" render_hosts_return_controls
     fi
     finish_screen
 }
 
+render_hosts_warning() {
+    local warning='! Hosts entries persist after exit; remove them explicitly.'
+    local max=$((TERM_WIDTH - 1)) remaining shown index style fade_width=0
+    local -a fade_styles=(
+        '48;2;45;25;60'
+        '48;2;36;20;48'
+        '48;2;27;15;36'
+        '48;2;18;10;24'
+        '48;2;9;5;12'
+        '48;2;0;0;0'
+    )
+
+    ((max > 0)) || return
+    if ((max <= 2)); then
+        colour '1;38;2;255;190;232;48;2;57;31;74' "$(truncate_text '  ' "$max")"
+        return
+    fi
+
+    printf '  '
+    remaining=$((max - 2))
+    shown=$warning
+    if ((remaining < ${#warning})); then
+        shown=$(truncate_text "$warning" "$remaining")
+    else
+        fade_width=$((remaining - ${#warning}))
+        ((fade_width > ${#fade_styles[@]})) && fade_width=${#fade_styles[@]}
+    fi
+    colour '1;38;2;255;190;232;48;2;57;31;74' "$shown"
+    for ((index = 0; index < fade_width; index++)); do
+        style=${fade_styles[$index]}
+        colour "$style" ' '
+    done
+}
+
+render_hosts_legend() {
+    printf '  '
+    if ((TERM_WIDTH < 26)); then
+        colour '1;38;2;184;127;242' 'M'
+        printf ' | '
+        colour '38;2;157;159;168' 'A'
+        printf ' | '
+        colour '1;38;2;231;183;111' 'C'
+    elif ((TERM_WIDTH < 34)); then
+        colour '1;38;2;184;127;242' 'Map'
+        printf ' | '
+        colour '38;2;157;159;168' 'Absent'
+        printf ' | '
+        colour '1;38;2;231;183;111' 'Conflict'
+    else
+        colour '1;38;2;184;127;242' 'Mapped'
+        printf ' | '
+        colour '38;2;157;159;168' 'Absent'
+        printf ' | '
+        colour '1;38;2;231;183;111' 'Conflict'
+    fi
+}
+
+render_hosts_heading() {
+    render_hosts_row 'IP' 'HOSTNAME' heading
+}
+
+render_hosts_row() {
+    local ip=$1 hostname=$2 kind=$3 stripe=${4:-0}
+    local hostname_width=$((TERM_WIDTH - 20)) shown room ip_width ip_style name_style stripe_style ip_cell padding_width
+    if ((hostname_width < 1)); then
+        if [[ "$kind" == heading ]]; then
+            print_clipped_line "  $ip  $hostname"
+        elif ((TERM_WIDTH < 7)); then
+            printf '  '
+            shown=$(truncate_text "$hostname" "$((TERM_WIDTH - 3))")
+            hosts_status_style "$hostname" "$stripe"
+            colour "$name_style;$stripe_style" "$shown"
+        else
+            room=$((TERM_WIDTH - 3))
+            ip_width=$(((room - 2) / 2))
+            ((ip_width < 1)) && ip_width=1
+            hostname_width=$((room - ip_width - 2))
+            shown=$(truncate_text "$hostname" "$hostname_width")
+            hosts_status_style "$hostname" "$stripe"
+            printf '  '
+            printf -v ip_cell '%-*s  ' "$ip_width" "$(truncate_text "$ip" "$ip_width")"
+            colour "$ip_style;$stripe_style" "$ip_cell"
+            colour "$name_style;$stripe_style" "$shown"
+        fi
+    else
+        if [[ "$kind" == heading ]]; then
+            printf '  %-15s  %s' "$ip" "$(truncate_text "$hostname" "$hostname_width")"
+            return
+        fi
+        hosts_status_style "$hostname" "$stripe"
+        printf '  '
+        printf -v ip_cell '%-15s  ' "$ip"
+        colour "$ip_style;$stripe_style" "$ip_cell"
+        shown=$(truncate_text "$hostname" "$hostname_width")
+        colour "$name_style;$stripe_style" "$shown"
+        padding_width=$((hostname_width - ${#shown}))
+        if ((padding_width > 0)); then
+            printf -v ip_cell '%*s' "$padding_width" ''
+            colour "$stripe_style" "$ip_cell"
+        fi
+    fi
+}
+
+hosts_status_style() {
+    local hostname=$1 stripe=$2
+    case "${HOSTS_PRESENCE[$hostname]:-ABSENT}" in
+        PRESENT)
+            ip_style='38;2;184;127;242'
+            name_style='1;38;2;184;127;242'
+            ;;
+        CONFLICT)
+            ip_style='38;2;231;183;111'
+            name_style='1;38;2;231;183;111'
+            ;;
+        *)
+            ip_style='38;2;157;159;168'
+            name_style='38;2;157;159;168'
+            ;;
+    esac
+    if ((stripe % 2)); then
+        stripe_style='48;2;29;31;37'
+    else
+        stripe_style='48;2;24;26;32'
+    fi
+}
+
 render_hosts_return_controls() {
     printf '  '
     key_hint 'Esc'
-    printf '/'
+    printf ' or '
     key_hint 'Q'
     printf ' Return (sync is Windows-only)'
 }
 
 render_hosts_controls() {
-    if ((TERM_WIDTH < 32)); then
-        printf '  '
-        key_hint 'A'
-        printf ' '
-        key_hint 'R'
-        printf ' '
-        key_hint 'Esc'
-        printf '/'
-        key_hint 'Q'
-        return
-    fi
-
     printf '  '
     key_hint 'A'
-    printf ' Sync     '
-    key_hint 'R'
-    printf ' Remove     '
+    printf ' Apply    '
+    key_hint 'D'
+    printf ' Delete host config    '
+    key_hint 'Ctrl+D'
+    printf ' Delete all TW host blocks    '
     key_hint 'Esc'
-    printf '/'
+    printf ' or '
     key_hint 'Q'
+    printf ' Return'
+}
+
+render_hosts_controls_short() {
+    printf '  '
+    if ((TERM_WIDTH < 24)); then
+        key_hint 'A'
+        printf ' '
+        key_hint 'D'
+    elif ((TERM_WIDTH < 34)); then
+        key_hint 'A'
+        printf ' Apply  '
+        key_hint 'D'
+        printf ' Delete'
+    else
+        key_hint 'A'
+        printf ' Apply    '
+        key_hint 'D'
+        printf ' Delete host config'
+    fi
+}
+
+render_hosts_controls_return() {
+    printf '  '
+    if ((TERM_WIDTH < 24)); then
+        key_hint '^D'
+        printf ' all  '
+        key_hint 'Esc'
+        printf ' '
+        key_hint 'Q'
+    elif ((TERM_WIDTH < 46)); then
+        key_hint '^D'
+        printf ' all TW  '
+        key_hint 'Esc'
+        printf ' or '
+        key_hint 'Q'
+    elif ((TERM_WIDTH < 64)); then
+        key_hint '^D'
+        printf ' Delete all TW blocks   '
+        key_hint 'Esc'
+        printf ' or '
+        key_hint 'Q'
+    else
+        key_hint 'Ctrl+D'
+        printf ' Delete all TW host blocks    '
+        key_hint 'Esc'
+        printf ' or '
+        key_hint 'Q'
+    fi
     printf ' Return'
 }
 
@@ -1574,6 +1753,7 @@ read_key() {
         case "$first" in
             $'\r'|$'\n') KEY="ENTER" ;;
             $'\x12')      KEY="RESTART" ;;
+            $'\x04')      KEY="REMOVE_ALL_HOSTS" ;;
             *)            KEY=$first ;;
         esac
         return 0
@@ -1611,19 +1791,72 @@ read_key() {
     return 0
 }
 
-manage_hosts() {
-    local action=$1 context helper entries="" preview snapshot answer="" result index
+configured_hosts_entries() {
+    local index
     for index in "${!LOCAL_HOSTNAMES[@]}"; do
-        [[ -n "$entries" ]] && entries+=$'\n'
-        entries+="${LOCAL_HOSTNAMES[$index]} ${LOCAL_ADDRESSES[$index]}"
+        printf '%s %s\n' "${LOCAL_HOSTNAMES[$index]}" "${LOCAL_ADDRESSES[$index]}"
     done
-    if [[ "$action" == Remove ]]; then
+}
+
+check_hosts_presence() {
+    local context helper entries response line status name
+    local -A seen=()
+    HOSTS_PRESENCE=()
+    entries=$(configured_hosts_entries)
+    if ! context=$(readlink -f -- "$CONFIG") ||
+       ! context=$(cygpath -w "$context") ||
+       ! helper=$(cygpath -w "$SCRIPT_DIR/hosts-manager.ps1") ||
+       ! response=$(WIZARD_CONTEXT_PATH="$context" WIZARD_HOSTS="$entries" \
+           powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+           -File "$helper" -Mode Check -Action Sync </dev/null 2>&1); then
+        MESSAGE='Could not read Windows hosts mappings; presence is unavailable.'
+        return 1
+    fi
+    response=${response//$'\r'/}
+    if [[ -n "$response" ]]; then
+        while IFS= read -r line; do
+            if [[ ! "$line" =~ ^HOST\|(PRESENT|ABSENT|CONFLICT)\|([a-z0-9.-]+)$ ]]; then
+                HOSTS_PRESENCE=()
+                MESSAGE='Invalid Windows hosts check response; presence is unavailable.'
+                return 1
+            fi
+            status=${BASH_REMATCH[1]}
+            name=${BASH_REMATCH[2]}
+            if [[ -z "${HOSTNAME_IP[$name]:-}" || -n "${seen[$name]:-}" ]]; then
+                HOSTS_PRESENCE=()
+                MESSAGE='Invalid Windows hosts check response; presence is unavailable.'
+                return 1
+            fi
+            seen["$name"]=1
+            HOSTS_PRESENCE["$name"]=$status
+        done <<< "$response"
+    fi
+    for name in "${LOCAL_HOSTNAMES[@]}"; do
+        if [[ -z "${seen[$name]:-}" ]]; then
+            HOSTS_PRESENCE=()
+            MESSAGE='Incomplete Windows hosts check; presence is unavailable.'
+            return 1
+        fi
+    done
+    MESSAGE=""
+}
+
+manage_hosts() {
+    local action=$1 context helper entries preview snapshot answer="" result line
+    entries=$(configured_hosts_entries)
+    if [[ "$action" != Sync ]]; then
         entries=""
     fi
 
     restore_tty_mode
     printf '\033[?25h\033[H\033[J'
-    printf 'Windows hosts: %s (this config only)\n\n' "$action"
+    if [[ "$action" == RemoveAll ]]; then
+        printf 'Windows hosts: delete ALL TunnelWizard blocks across ALL configs\n\n'
+    elif [[ "$action" == Remove ]]; then
+        printf 'Windows hosts: delete this config block only\n\n'
+    else
+        printf 'Windows hosts: Apply configured hostnames (this config only)\n\n'
+    fi
     if ! context=$(readlink -f -- "$CONFIG") ||
        ! context=$(cygpath -w "$context") ||
        ! helper=$(cygpath -w "$SCRIPT_DIR/hosts-manager.ps1"); then
@@ -1638,11 +1871,25 @@ manage_hosts() {
         if [[ ! "$snapshot" =~ ^[0-9a-f]{64}$ ]]; then
             printf 'Invalid preview response; no changes made.\n'
         else
-            printf '%s\n\n' "${preview%$'\n'SNAPSHOT=*}"
+            while IFS= read -r line; do
+                case "$line" in
+                    DIFF\|Equal\|*)  colour '38;2;144;148;157' "  ${line#DIFF|Equal|}"; printf '\n' ;;
+                    DIFF\|Remove\|*) colour '38;2;221;145;153' "- ${line#DIFF|Remove|}"; printf '\n' ;;
+                    DIFF\|Add\|*)    colour '38;2;145;204;163' "+ ${line#DIFF|Add|}"; printf '\n' ;;
+                    *)               printf '%s\n' "$line" ;;
+                esac
+            done <<< "${preview%$'\n'SNAPSHOT=*}"
+            printf '\n'
             if [[ "$preview" == *'No changes needed.'* ]]; then
                 printf 'No hosts edit or DNS flush was needed.\n'
             else
-                read -r -p "Confirm $action of only this config block? [y/N] " answer <&3 || true
+                if [[ "$action" == RemoveAll ]]; then
+                    read -r -p 'Confirm DELETE ALL TunnelWizard blocks across ALL configs? This requests administrator elevation (UAC). [y/N] ' answer <&3 || true
+                elif [[ "$action" == Remove ]]; then
+                    read -r -p 'Confirm DELETE this config block? This requests administrator elevation (UAC). [y/N] ' answer <&3 || true
+                else
+                    read -r -p 'Confirm APPLY this config hosts? This requests administrator elevation (UAC). [y/N] ' answer <&3 || true
+                fi
                 if [[ "$answer" == y || "$answer" == Y ]]; then
                     local commit_output
                     commit_output=$(WIZARD_CONTEXT_PATH="$context" WIZARD_HOSTS="$entries" \
@@ -1664,6 +1911,7 @@ manage_hosts() {
         fi
     fi
     read -r -p 'Press Enter to return... ' _ <&3 || true
+    check_hosts_presence || true
     if ! set_tty_mode; then
         EXIT_REQUESTED=1
         return 1
@@ -1761,12 +2009,14 @@ while true; do
 
     if [[ "$UI_MODE" == hosts ]]; then
         case "$KEY" in
-            a|A|r|R)
+            a|A|d|D|REMOVE_ALL_HOSTS)
                 if ! is_windows_shell; then
                     MESSAGE='Hosts-file sync is Windows-only; configured forwards still bind locally.'
                     REDRAW_NEEDED=1
                 elif [[ "$KEY" == a || "$KEY" == A ]]; then
                     manage_hosts Sync || true
+                elif [[ "$KEY" == REMOVE_ALL_HOSTS ]]; then
+                    manage_hosts RemoveAll || true
                 else
                     manage_hosts Remove || true
                 fi
@@ -1792,6 +2042,7 @@ while true; do
                 else
                     UI_MODE="hosts"
                     MESSAGE=""
+                    check_hosts_presence || true
                 fi
                 REDRAW_NEEDED=1
                 ;;
