@@ -3,13 +3,17 @@
 #
 # Syntax:
 #   machine ALIAS SSH_HOST SSH_USER IDENTITY_FILE GROUP
-#   tunnel  DISPLAY_NAME LOCAL_FORWARD
+#   tunnel  DISPLAY_NAME LOCAL_FORWARD [LOCAL_HOSTNAME]
 #   shell   DISPLAY_NAME SSH_TARGET
+#   hosts_management yes|no
 #
 # GROUP=yes: forwards for this machine share one SSH process.
 # GROUP=no:  each forward gets its own SSH process.
 #
 # Leave private keys in ~/.ssh; do not copy them into this project folder.
+# Default off. Set to yes to expose the Windows hosts menu; it NEVER edits
+# the hosts file at startup. Use H, then A or R, preview and confirm manually.
+hosts_management no
 
 machine example-web web.example.invalid alice ~/.ssh/id_ed25519 no
 tunnel "Web application" 8080:127.0.0.1:80
@@ -18,6 +22,16 @@ tunnel "Web HTTPS"     8443:127.0.0.1:443
 machine example-dev dev.example.invalid alice ~/.ssh/id_ed25519 yes
 tunnel "Dev dashboard" 9000:127.0.0.1:9000
 tunnel "Dev database"  15432:127.0.0.1:5432
+
+# Example: two Proxmox machines can BOTH expose local port 443, because
+# each hostname receives its own deterministic 127.x.x.x bind address.
+# Uncomment and replace SSH hosts and username to use these:
+# machine proxmox-one pmx-one.example.invalid alice ~/.ssh/id_ed25519 no
+# tunnel "Proxmox one" 443:127.0.0.1:8006 pmx-one
+# machine proxmox-two pmx-two.example.invalid alice ~/.ssh/id_ed25519 no
+# tunnel "Proxmox two" 443:127.0.0.1:8006 pmx-two
+# After explicitly syncing in H, browse https://pmx-one and https://pmx-two.
+# For https://pmx-one:8006 instead, use 8006:127.0.0.1:8006 pmx-one.
 
 # Saved shells open in separate WezTerm windows.
 shell "Web server"      alice@web.example.invalid

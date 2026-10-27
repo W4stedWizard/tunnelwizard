@@ -56,11 +56,17 @@ declare -a TUNNEL_IDS=()
 declare -a PIDS=()
 declare -a SHELL_NAMES=()
 declare -a SHELL_TARGETS=()
+declare -a LOCAL_HOSTNAMES=()
+declare -a LOCAL_ADDRESSES=()
+declare -A HOSTNAME_IP=()
+declare -A IP_HOSTNAME=()
 
 declare -A LABEL=()
 declare -A SSH_HOST=()
 declare -A SSH_USER=()
 declare -A IDENTITY=()
+declare -A FORWARD_NAME=()
+declare -A FORWARD_HOSTNAME=()
 declare -A FORWARD_COUNT=()
 declare -A FORWARD=()
 declare -A STATUS=()
@@ -74,6 +80,8 @@ CURRENT_GROUP=""
 GROUP_TUNNEL_ID=""
 GROUP_FORWARD_INDEX=0
 MACHINE_NUMBER=0
+HOSTS_MANAGEMENT=no
+CONFIG_ERROR=0
 
 UI_MODE="dashboard"
 SHELL_SELECTION=0
@@ -112,8 +120,9 @@ fi
 
 # Config syntax:
 #   machine ALIAS SSH_HOST SSH_USER IDENTITY_FILE GROUP
-#   tunnel  DISPLAY_NAME LOCAL_FORWARD
+#   tunnel  DISPLAY_NAME LOCAL_FORWARD [LOCAL_HOSTNAME]
 #   shell   DISPLAY_NAME SSH_TARGET
+#   hosts_management yes|no (default: no; only enables the manual Windows menu)
 #
 # Each tunnel belongs to the most recently declared machine.
 # GROUP=yes: all that machine's forwards share an SSH process.
@@ -148,20 +157,66 @@ machine() {
     GROUP_FORWARD_INDEX=0
 }
 
+hosts_management() {
+    if (($# != 1)) || [[ "$1" != yes && "$1" != no ]]; then
+        echo 'Usage: hosts_management yes|no' >&2
+        CONFIG_ERROR=1
+        return 2
+    fi
+    HOSTS_MANAGEMENT=$1
+}
+
+valid_local_hostname() {
+    local hostname=${1,,} label
+    [[ ${#hostname} -le 253 && "$hostname" =~ ^[a-z0-9.-]+$ &&
+       "$hostname" != *..* && "$hostname" != .* && "$hostname" != *. ]] || return 1
+    local -a labels=()
+    IFS=. read -r -a labels <<< "$hostname"
+    for label in "${labels[@]}"; do
+        [[ ${#label} -le 63 && "$label" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || return 1
+    done
+    # Numeric IPv4-looking names must not masquerade as host aliases.
+    [[ ! "$hostname" =~ ^[0-9]+(\.[0-9]+){3}$ ]]
+}
+
+local_host_ip() {
+    local hostname=${1,,} hash=0 char ascii i
+    for ((i = 0; i < ${#hostname}; i++)); do
+        char=${hostname:i:1}
+        printf -v ascii '%d' "'$char"
+        hash=$(((hash * 131 + ascii) % 16387064))
+    done
+    printf '127.%d.%d.%d' "$((hash / 64516 + 1))" \
+        "$((hash / 254 % 254 + 1))" "$((hash % 254 + 1))"
+}
+
+valid_loopback_ip() {
+    local address=$1 octet
+    local -a octets=()
+    [[ "$address" =~ ^127\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    octets=(127 "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")
+    for octet in "${octets[@]}"; do
+        [[ "$octet" == 0 || "$octet" != 0* ]] || return 1
+        ((10#$octet <= 255)) || return 1
+    done
+}
+
 tunnel() {
     if [[ -z "$CURRENT_ALIAS" ]]; then
         echo 'Error: define a machine before its tunnels.' >&2
+        CONFIG_ERROR=1
         return 2
     fi
 
-    if (($# != 2)); then
-        echo 'Usage: tunnel DISPLAY_NAME LOCAL_FORWARD' >&2
+    if (($# != 2 && $# != 3)); then
+        echo 'Usage: tunnel DISPLAY_NAME LOCAL_FORWARD [LOCAL_HOSTNAME]' >&2
+        CONFIG_ERROR=1
         return 2
     fi
 
     local name=$1
     local forward=$2
-    local id index local_port display
+    local id index local_port display hostname ip bind
     local -a parts=()
 
     # Hostname/IPv4 forms:
@@ -174,9 +229,47 @@ tunnel() {
         4) local_port=${parts[1]} ;;
         *)
             echo "Error: unrecognized forward format: $forward" >&2
+            CONFIG_ERROR=1
             return 2
             ;;
     esac
+
+    if (($# == 3)); then
+        hostname=${3,,}
+        if ! valid_local_hostname "$hostname"; then
+            echo "Error: invalid local hostname: $3" >&2
+            CONFIG_ERROR=1
+            return 2
+        fi
+        ip=$(local_host_ip "$hostname")
+        if ((${#parts[@]} == 4)); then
+            bind=${parts[0]}
+            if ! valid_loopback_ip "$bind"; then
+                echo "Error: hostname '$hostname' can only bind to an IPv4 loopback address (127/8), not '$bind'." >&2
+                CONFIG_ERROR=1
+                return 2
+            fi
+            # An explicit loopback bind is the hostname's stable address.
+            ip=$bind
+        fi
+        if [[ -n "${HOSTNAME_IP[$hostname]:-}" && "${HOSTNAME_IP[$hostname]}" != "$ip" ]]; then
+            echo "Error: conflicting hostname: $hostname" >&2
+            CONFIG_ERROR=1
+            return 2
+        fi
+        if [[ -n "${IP_HOSTNAME[$ip]:-}" && "${IP_HOSTNAME[$ip]}" != "$hostname" ]]; then
+            echo "Error: loopback address collision: $hostname and ${IP_HOSTNAME[$ip]} ($ip)" >&2
+            CONFIG_ERROR=1
+            return 2
+        fi
+        forward="$ip:$local_port:${parts[${#parts[@]}-2]}:${parts[${#parts[@]}-1]}"
+        if [[ -z "${HOSTNAME_IP[$hostname]:-}" ]]; then
+            LOCAL_HOSTNAMES+=("$hostname")
+            LOCAL_ADDRESSES+=("$ip")
+            HOSTNAME_IP["$hostname"]=$ip
+            IP_HOSTNAME["$ip"]=$hostname
+        fi
+    fi
 
     printf -v display '%5s : %s' "$local_port" "$name"
 
@@ -197,6 +290,8 @@ tunnel() {
         GROUP_FORWARD_INDEX=$((GROUP_FORWARD_INDEX + 1))
 
         FORWARD["$id:$index"]=$forward
+        FORWARD_NAME["$id:$index"]=$name
+        FORWARD_HOSTNAME["$id:$index"]=${hostname:-}
         FORWARD_COUNT["$id"]=$GROUP_FORWARD_INDEX
 
         if [[ -n "${LABEL[$id]}" ]]; then
@@ -211,6 +306,8 @@ tunnel() {
         SSH_HOST["$id"]=$CURRENT_SSH_HOST
         SSH_USER["$id"]=$CURRENT_SSH_USER
         IDENTITY["$id"]=$CURRENT_IDENTITY
+        FORWARD_NAME["$id:0"]=$name
+        FORWARD_HOSTNAME["$id:0"]=${hostname:-}
         FORWARD["$id:0"]=$forward
         FORWARD_COUNT["$id"]=1
         STATUS["$id"]="PENDING"
@@ -243,6 +340,11 @@ if ! source "$CONFIG"; then
     exit 1
 fi
 
+if ((CONFIG_ERROR)); then
+    echo "Invalid tunnel or hosts management setting in $CONFIG" >&2
+    exit 1
+fi
+
 if ((${#TUNNEL_IDS[@]} == 0 && ${#SHELL_NAMES[@]} == 0)); then
     echo "No tunnels or shell connections configured in $CONFIG" >&2
     exit 1
@@ -256,6 +358,20 @@ colour() {
     else
         printf '%s' "$text"
     fi
+}
+
+key_hint() {
+    colour '1;38;2;105;180;255' "$1"
+}
+
+render_arrow_hint() {
+    key_hint '←'
+    printf '/'
+    key_hint '→'
+    printf '/'
+    key_hint '↑'
+    printf '/'
+    key_hint '↓'
 }
 
 status_badge() {
@@ -299,6 +415,13 @@ terminal_height() {
 
     [[ "$height" =~ ^[0-9]+$ ]] || height=24
     printf '%s' "$height"
+}
+
+is_windows_shell() {
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 truncate_text() {
@@ -442,7 +565,7 @@ render_header_line() {
     local title='  ✦ SSH TUNNEL WIZARD ✦  '
     local subtitle='  Your tunnels, conjured and watched over.'
     local max=$((TERM_WIDTH - 1))
-    local remaining shown padding
+    local remaining shown fade_count index glyph style
 
     ((max > 0)) || return
 
@@ -466,10 +589,17 @@ render_header_line() {
 
     if ((remaining > 0)); then
         shown=$(truncate_text "$subtitle" "$remaining")
-        printf -v padding '%*s' "$((remaining - ${#shown}))" ''
-
         colour '38;2;204;181;247;48;2;42;24;64' \
-            "${shown}${padding}"
+            "$shown"
+        fade_count=$((remaining - ${#shown}))
+        for ((index = 0; index < fade_count; index++)); do
+            case $((index % 3)) in
+                0) glyph='▓'; style='38;2;204;181;247;48;2;42;24;64' ;;
+                1) glyph='▒'; style='38;2;137;112;177;48;2;42;24;64' ;;
+                2) glyph='░'; style='38;2;87;70;116;48;2;42;24;64' ;;
+            esac
+            colour "$style" "$glyph"
+        done
     fi
 }
 
@@ -490,22 +620,40 @@ render_rule() {
 
 render_message() {
     if [[ -n "$MESSAGE" ]]; then
-        print_clipped_line "  $MESSAGE"
+        colour '38;2;245;228;190;48;2;54;45;70' \
+            "$(truncate_text "  ▪ $MESSAGE" "$((TERM_WIDTH - 1))")"
     fi
 }
 
 render_global_controls() {
-    local full='  Ctrl+R  Restart tunnels     Ctrl+C  Stop and exit'
+    local full='  H Hosts    Ctrl+R Restart tunnels    Ctrl+C Stop and exit'
 
     if ((TERM_WIDTH <= ${#full})); then
-        print_clipped_line '  Ctrl+R Restart    Ctrl+C Exit'
+        if ((TERM_WIDTH < 34)); then
+            printf '  '
+            key_hint 'H'
+            printf ' '
+            key_hint '^R'
+            printf ' '
+            key_hint '^C'
+            return
+        fi
+        printf '  '
+        key_hint 'H'
+        printf ' Hosts  '
+        key_hint '^R'
+        printf ' Restart  '
+        key_hint '^C'
+        printf ' Exit'
         return
     fi
 
     printf '  '
-    colour '1;36' 'Ctrl+R'
-    printf '  Restart tunnels     '
-    colour '1;36' 'Ctrl+C'
+    key_hint 'H'
+    printf '  Hosts    '
+    key_hint 'Ctrl+R'
+    printf '  Restart tunnels    '
+    key_hint 'Ctrl+C'
     printf '  Stop and exit'
 }
 
@@ -513,26 +661,67 @@ render_dashboard_shell_controls() {
     local full='  1–9 Open instantly    ←/→/↑/↓ Navigate    Enter Open'
 
     if ((TERM_WIDTH > ${#full})); then
-        printf '%s' "$full"
+        printf '  '
+        key_hint '1–9'
+        printf ' Open instantly    '
+        render_arrow_hint
+        printf ' Navigate    '
+        key_hint 'Enter'
+        printf ' Open'
     else
-        print_clipped_line '  1–9 Open    Arrows Move    Enter Open'
+        printf '  '
+        if ((TERM_WIDTH < 34)); then
+            key_hint '1–9'
+            printf ' '
+            key_hint '↑↓←→'
+            printf ' '
+            key_hint 'Enter'
+        else
+            key_hint '1–9'
+            printf ' Open '
+            key_hint '↑↓←→'
+            printf ' Move '
+            key_hint 'Enter'
+            printf ' Open'
+        fi
     fi
 }
 
 render_dashboard_global_controls() {
-    local full='  S  Saved SSH shells    Ctrl+R  Restart tunnels    Ctrl+C  Stop and exit'
+    local full='  S  Saved SSH shells    H  Hosts    Ctrl+R  Restart    Ctrl+C  Stop and exit'
 
     if ((TERM_WIDTH <= ${#full})); then
-        print_clipped_line '  S Menu  Ctrl+R Restart  Ctrl+C Exit'
+        if ((TERM_WIDTH < 34)); then
+            printf '  '
+            key_hint 'S'
+            printf ' '
+            key_hint 'H'
+            printf ' '
+            key_hint '^R'
+            printf ' '
+            key_hint '^C'
+            return
+        fi
+        printf '  '
+        key_hint 'S'
+        printf ' Shells  '
+        key_hint 'H'
+        printf ' Hosts  '
+        key_hint '^R'
+        printf ' Restart  '
+        key_hint '^C'
+        printf ' Exit'
         return
     fi
 
     printf '  '
-    colour '1;36' 'S'
+    key_hint 'S'
     printf '  Saved SSH shells    '
-    colour '1;36' 'Ctrl+R'
-    printf '  Restart tunnels    '
-    colour '1;36' 'Ctrl+C'
+    key_hint 'H'
+    printf '  Hosts    '
+    key_hint 'Ctrl+R'
+    printf '  Restart    '
+    key_hint 'Ctrl+C'
     printf '  Stop and exit'
 }
 
@@ -561,14 +750,70 @@ render_tunnel_heading() {
         "$(truncate_text 'SSH SERVER' "$host_width")"
 }
 
+render_tunnel_label() {
+    local id=$1 max_width=$2 index forward local_port hostname display_name
+    local plain='' separator='' prefix visible_width keep_width cursor=0
+    local start length highlight_length output=''
+    local -a host_starts=() host_lengths=() parts=()
+
+    for ((index = 0; index < FORWARD_COUNT[$id]; index++)); do
+        forward=${FORWARD["$id:$index"]}
+        IFS=: read -r -a parts <<< "$forward"
+        if ((${#parts[@]} == 3)); then
+            local_port=${parts[0]}
+        else
+            local_port=${parts[1]}
+        fi
+        hostname=${FORWARD_HOSTNAME["$id:$index"]:-}
+        display_name=${FORWARD_NAME["$id:$index"]}
+        plain+="$separator"
+        printf -v prefix '%5s : ' "$local_port"
+        plain+="$prefix"
+        if [[ -n "$hostname" ]]; then
+            host_starts+=("${#plain}")
+            host_lengths+=("${#hostname}")
+            plain+="$hostname "
+        fi
+        plain+="$display_name"
+        separator=', '
+    done
+
+    visible_width=${#plain}
+    keep_width=$visible_width
+    if ((visible_width > max_width)); then
+        keep_width=$((max_width - 3))
+        ((keep_width < 0)) && keep_width=0
+        visible_width=$max_width
+    fi
+
+    for index in "${!host_starts[@]}"; do
+        start=${host_starts[$index]}
+        length=${host_lengths[$index]}
+        ((start < keep_width)) || break
+        output+="${plain:cursor:start-cursor}"
+        highlight_length=$length
+        ((highlight_length > keep_width - start)) && highlight_length=$((keep_width - start))
+        output+="$(colour '1;38;2;205;205;215' "${plain:start:highlight_length}")"
+        cursor=$((start + highlight_length))
+    done
+    output+="${plain:cursor:keep_width-cursor}"
+    if ((visible_width > keep_width)); then
+        output+='...'
+    fi
+
+    printf '%s' "$output"
+    printf '%*s' "$((max_width - visible_width))" ''
+}
+
 render_tunnel_row() {
     local id=$1 label_width=$2 host_width=$3
-    local label host
+    local host
 
-    label=$(truncate_text "${LABEL[$id]}" "$label_width")
     host=$(truncate_text "${SSH_HOST[$id]}" "$host_width")
 
-    printf '  %-*s  ' "$label_width" "$label"
+    printf '  '
+    render_tunnel_label "$id" "$label_width"
+    printf '  '
     status_badge "${STATUS[$id]}"
     printf '  %s' "$host"
 }
@@ -726,16 +971,46 @@ render_menu_footer() {
         if [[ -n "$MESSAGE" ]]; then
             footer_at "$((TERM_HEIGHT - 1))" render_message
         fi
-        footer_at "$TERM_HEIGHT" printf '%s' "$full"
+        footer_at "$TERM_HEIGHT" render_menu_controls_full
     else
         if [[ -n "$MESSAGE" ]]; then
             footer_at "$((TERM_HEIGHT - 2))" render_message
         fi
-        footer_at "$((TERM_HEIGHT - 1))" print_clipped_line \
-            '  1–9 Open    Arrows Navigate'
-        footer_at "$TERM_HEIGHT" print_clipped_line \
-            '  Enter Open    Esc/Q Return'
+        footer_at "$((TERM_HEIGHT - 1))" render_menu_controls_short
+        footer_at "$TERM_HEIGHT" render_menu_return_hint
     fi
+}
+
+render_menu_controls_full() {
+    printf '  '
+    key_hint '1–9'
+    printf ' Open instantly    '
+    render_arrow_hint
+    printf ' Navigate    '
+    key_hint 'Enter'
+    printf ' Open    '
+    key_hint 'Esc'
+    printf '/'
+    key_hint 'Q'
+    printf ' Return'
+}
+
+render_menu_controls_short() {
+    printf '  '
+    key_hint '1–9'
+    printf ' Open '
+    key_hint '↑↓←→'
+    printf ' Navigate'
+}
+
+render_menu_return_hint() {
+    printf '  '
+    key_hint 'Enter'
+    printf ' Open '
+    key_hint 'Esc'
+    printf '/'
+    key_hint 'Q'
+    printf ' Return'
 }
 
 render_shell_menu() {
@@ -818,14 +1093,81 @@ render_shell_menu() {
     finish_screen
 }
 
+render_hosts_menu() {
+    local footer_rows=1 index
+    [[ -n "$MESSAGE" ]] && footer_rows=2
+    begin_screen "$footer_rows"
+    body_line render_header_line
+    body_line :
+    if is_windows_shell; then
+        body_line print_clipped_line '  WINDOWS HOSTS · CURRENT CONFIG'
+    else
+        body_line print_clipped_line '  LOCAL HOSTNAMES · CURRENT CONFIG'
+    fi
+    body_line render_rule
+    body_line print_clipped_line '  Entries persist after exiting the wizard.'
+    if is_windows_shell; then
+        body_line print_clipped_line '  A: preview and sync this config only'
+        body_line print_clipped_line '  R: preview and remove this config block only'
+    else
+        body_line print_clipped_line '  Hosts-file sync is Windows-only; forwards remain local.'
+    fi
+    if ((${#LOCAL_HOSTNAMES[@]} == 0)); then
+        body_line print_clipped_line '  No local hostnames are configured in this config.'
+    fi
+    body_line :
+    for index in "${!LOCAL_HOSTNAMES[@]}"; do
+        body_line print_clipped_line "  ${LOCAL_ADDRESSES[$index]}  ${LOCAL_HOSTNAMES[$index]}"
+    done
+    [[ -n "$MESSAGE" ]] && footer_at "$((TERM_HEIGHT - 1))" render_message
+    if is_windows_shell; then
+        footer_at "$TERM_HEIGHT" render_hosts_controls
+    else
+        footer_at "$TERM_HEIGHT" render_hosts_return_controls
+    fi
+    finish_screen
+}
+
+render_hosts_return_controls() {
+    printf '  '
+    key_hint 'Esc'
+    printf '/'
+    key_hint 'Q'
+    printf ' Return (sync is Windows-only)'
+}
+
+render_hosts_controls() {
+    if ((TERM_WIDTH < 32)); then
+        printf '  '
+        key_hint 'A'
+        printf ' '
+        key_hint 'R'
+        printf ' '
+        key_hint 'Esc'
+        printf '/'
+        key_hint 'Q'
+        return
+    fi
+
+    printf '  '
+    key_hint 'A'
+    printf ' Sync     '
+    key_hint 'R'
+    printf ' Remove     '
+    key_hint 'Esc'
+    printf '/'
+    key_hint 'Q'
+    printf ' Return'
+}
+
 render_screen() {
     local resize_event=$RESIZE_EVENT
 
-    if [[ "$UI_MODE" == menu ]]; then
-        render_shell_menu
-    else
-        render_dashboard
-    fi
+    case "$UI_MODE" in
+        menu) render_shell_menu ;;
+        hosts) render_hosts_menu ;;
+        *) render_dashboard ;;
+    esac
 
     # A resize delivered during a render still needs its own full repaint.
     if ((RESIZE_EVENT == resize_event)); then
@@ -839,6 +1181,8 @@ move_shell_horizontal() {
     local direction=$1
     local count=${2:-${#SHELL_NAMES[@]}}
     local row_start row_size column
+
+    ((count > 0)) || return 0
 
     row_start=$((SHELL_SELECTION / 3 * 3))
     row_size=$((count - row_start))
@@ -857,6 +1201,8 @@ move_shell_vertical() {
     local direction=$1
     local count=${2:-${#SHELL_NAMES[@]}}
     local rows row column destination
+
+    ((count > 0)) || return 0
 
     rows=$(((count + 2) / 3))
     row=$((SHELL_SELECTION / 3))
@@ -1254,6 +1600,68 @@ read_key() {
     return 0
 }
 
+manage_hosts() {
+    local action=$1 context helper entries="" preview snapshot answer="" result index
+    for index in "${!LOCAL_HOSTNAMES[@]}"; do
+        [[ -n "$entries" ]] && entries+=$'\n'
+        entries+="${LOCAL_HOSTNAMES[$index]} ${LOCAL_ADDRESSES[$index]}"
+    done
+    if [[ "$action" == Remove ]]; then
+        entries=""
+    fi
+
+    restore_tty_mode
+    printf '\033[?25h\033[H\033[J'
+    printf 'Windows hosts: %s (this config only)\n\n' "$action"
+    if ! context=$(readlink -f -- "$CONFIG") ||
+       ! context=$(cygpath -w "$context") ||
+       ! helper=$(cygpath -w "$SCRIPT_DIR/hosts-manager.ps1"); then
+        printf 'Cannot resolve config or hosts helper path.\n'
+    elif ! preview=$(WIZARD_CONTEXT_PATH="$context" WIZARD_HOSTS="$entries" \
+        powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+        -File "$helper" -Mode Preview -Action "$action" 2>&1); then
+        printf 'Preview refused: %s\n' "$preview"
+    else
+        preview=${preview//$'\r'/}
+        snapshot=${preview##*$'\n'SNAPSHOT=}
+        if [[ ! "$snapshot" =~ ^[0-9a-f]{64}$ ]]; then
+            printf 'Invalid preview response; no changes made.\n'
+        else
+            printf '%s\n\n' "${preview%$'\n'SNAPSHOT=*}"
+            if [[ "$preview" == *'No changes needed.'* ]]; then
+                printf 'No hosts edit or DNS flush was needed.\n'
+            else
+                read -r -p "Confirm $action of only this config block? [y/N] " answer <&3 || true
+                if [[ "$answer" == y || "$answer" == Y ]]; then
+                    local commit_output
+                    commit_output=$(WIZARD_CONTEXT_PATH="$context" WIZARD_HOSTS="$entries" \
+                        powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+                        -File "$helper" -Mode Commit -Action "$action" \
+                        -ExpectedHash "$snapshot" < /dev/null 2>&1)
+                    result=$?
+                    [[ -n "$commit_output" ]] && printf '%s\n' "$commit_output"
+                    case "$result" in
+                        0) printf 'Hosts updated; Windows DNS cache flushed.\n' ;;
+                        3) printf 'Hosts updated, but ipconfig /flushdns FAILED. Retry flush manually.\n' ;;
+                        4) printf 'UAC cancelled; hosts file was not changed.\n' ;;
+                        *) printf 'Hosts update failed; review the diagnostic above and try again.\n' ;;
+                    esac
+                else
+                    printf 'Cancelled; hosts file was not changed.\n'
+                fi
+            fi
+        fi
+    fi
+    read -r -p 'Press Enter to return... ' _ <&3 || true
+    if ! set_tty_mode; then
+        EXIT_REQUESTED=1
+        return 1
+    fi
+    printf '\033[?25l'
+    FORCE_REPAINT=1
+    REDRAW_NEEDED=1
+}
+
 request_restart() {
     stop_tunnels
 
@@ -1340,18 +1748,50 @@ while true; do
         request_restart
     fi
 
-    if [[ "$UI_MODE" == dashboard ]]; then
-        if ((${#SHELL_NAMES[@]} == 0)); then
-            continue
-        fi
-
+    if [[ "$UI_MODE" == hosts ]]; then
         case "$KEY" in
-            s|S)
-                UI_MODE="menu"
-                SHELL_SELECTION=0
-                MENU_SCROLL=0
+            a|A|r|R)
+                if ! is_windows_shell; then
+                    MESSAGE='Hosts-file sync is Windows-only; configured forwards still bind locally.'
+                    REDRAW_NEEDED=1
+                elif [[ "$KEY" == a || "$KEY" == A ]]; then
+                    manage_hosts Sync || true
+                else
+                    manage_hosts Remove || true
+                fi
+                ;;
+            ESC|q|Q)
+                UI_MODE="dashboard"
                 MESSAGE=""
                 REDRAW_NEEDED=1
+                ;;
+        esac
+    elif [[ "$UI_MODE" == dashboard ]]; then
+        case "$KEY" in
+            h|H)
+                if [[ "$HOSTS_MANAGEMENT" != yes ]]; then
+                    MESSAGE='Hosts UI disabled. Add hosts_management yes to this config to opt in.'
+                elif ! is_windows_shell; then
+                    MESSAGE='Automatic hosts management is Windows-only; add aliases manually.'
+                elif ! command -v powershell.exe >/dev/null 2>&1 ||
+                     ! command -v cygpath >/dev/null 2>&1 ||
+                     ! command -v readlink >/dev/null 2>&1 ||
+                     [[ ! -r "$SCRIPT_DIR/hosts-manager.ps1" ]]; then
+                    MESSAGE='Windows hosts helper, PowerShell, cygpath or readlink unavailable.'
+                else
+                    UI_MODE="hosts"
+                    MESSAGE=""
+                fi
+                REDRAW_NEEDED=1
+                ;;
+            s|S)
+                if ((${#SHELL_NAMES[@]} > 0)); then
+                    UI_MODE="menu"
+                    SHELL_SELECTION=0
+                    MENU_SCROLL=0
+                    MESSAGE=""
+                    REDRAW_NEEDED=1
+                fi
                 ;;
             UP)
                 move_shell_vertical -1 "$(dashboard_shell_count)"
@@ -1366,8 +1806,10 @@ while true; do
                 move_shell_horizontal 1 "$(dashboard_shell_count)"
                 ;;
             ENTER)
-                open_shell_window "$SHELL_SELECTION" || true
-                REDRAW_NEEDED=1
+                if ((${#SHELL_NAMES[@]} > 0)); then
+                    open_shell_window "$SHELL_SELECTION" || true
+                    REDRAW_NEEDED=1
+                fi
                 ;;
             [1-9])
                 index=$((KEY - 1))

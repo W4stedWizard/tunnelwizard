@@ -15,6 +15,8 @@ shell connections that open in separate terminal windows.
 WezTerm is optional. On Windows, the non-WezTerm window fallback uses
 PowerShell and Git for Windows. On macOS it uses Terminal. On Linux it looks
 for `xdg-terminal-exec` or `x-terminal-emulator`.
+The opt-in Windows hosts menu uses Windows PowerShell, `cygpath` and `readlink`
+(provided with Git for Windows); it does not need third-party hashing tools.
 
 ## Get started
 
@@ -25,6 +27,7 @@ together in the resulting folder:
 ssh-tunnel-wizard/
 ├── README.md
 ├── tunnels.sh
+├── hosts-manager.ps1     # Windows-only, on-demand hosts-file helper
 ├── tunnels.conf.example
 ├── tunnels.conf          # Your local copy; do not commit it
 ├── ssh_config.example
@@ -89,7 +92,8 @@ Define a machine followed by its tunnels:
 
 ```bash
 machine ALIAS SSH_HOST SSH_USER IDENTITY_FILE GROUP
-tunnel DISPLAY_NAME LOCAL_FORWARD
+tunnel DISPLAY_NAME LOCAL_FORWARD [LOCAL_HOSTNAME]
+hosts_management no
 ```
 
 Each `tunnel` belongs to the most recently declared `machine`.
@@ -102,6 +106,58 @@ Each `tunnel` belongs to the most recently declared `machine`.
 - `GROUP=yes`: share one SSH process for that machine's forwards.
 - `GROUP=no`: start a separate SSH process for each forward.
 - `LOCAL_FORWARD`: a local forward such as `8080:127.0.0.1:80`.
+- `LOCAL_HOSTNAME` (optional): a DNS-style alias for this local forward. It
+  binds to its own `127.x.x.x` loopback address, allowing several hosts to use
+  the same local port. Without an explicit bind, TunnelWizard assigns a
+  deterministic address. You can instead choose a specific loopback address
+  in the four-part forward form (`BIND:LOCAL_PORT:DEST_HOST:DEST_PORT`); it
+  then becomes the hostname's address. Existing two-argument tunnels remain
+  unchanged. Non-loopback binds and hostname/address collisions are rejected.
+
+### Local hostnames and Windows hosts file
+
+The Windows hosts-file UI is **off by default**. Add `hosts_management yes` to
+the selected `.conf` to make the `H` menu available. Opting in does **not**
+change hosts on startup, when restarting tunnels, or on exit. In the `H` menu,
+choose `A` to preview the exact lines removed and added when syncing this
+config's aliases; confirm to request a one-time UAC prompt for only the hosts
+edit. Choose `R` to preview and remove **this config's** block, including stale
+aliases after editing your config. Edits persist after closing the wizard;
+removal is also manual. UAC cancellation leaves hosts unchanged. An edit
+checks for conflicts and fails if hosts changed after preview; preview again.
+
+Each config owns one marked block identified by a hash of its canonical full
+path; the marker also shows its filename. Two configs with the same filename
+in different directories do not share a block. The helper refuses malformed
+blocks and hostname/loopback conflicts outside the current block and preserves
+other configs' blocks and unrelated hosts lines. Only the confirmed hosts
+operation elevates; neither the wizard nor SSH runs as administrator. After
+**successful edits**, the helper runs `ipconfig /flushdns` automatically and
+reports separately if flushing fails. No network reboot is required.
+
+For example, both Proxmox nodes may use local port 443 to reach their remote
+port 8006, while browsing distinct local hostnames:
+
+```bash
+hosts_management yes
+machine proxmox-one pmx-one.example.invalid alice ~/.ssh/id_ed25519 no
+tunnel "Proxmox one" 443:127.0.0.1:8006 pmx-one
+machine proxmox-two pmx-two.example.invalid alice ~/.ssh/id_ed25519 no
+tunnel "Proxmox two" 443:127.0.0.1:8006 pmx-two
+```
+
+After confirming `H` → `A`, use `https://pmx-one` and `https://pmx-two`.
+Alternatively use `8006:127.0.0.1:8006 pmx-one` to browse
+`https://pmx-one:8006`. Your browser may warn that a Proxmox certificate does
+not match the local alias; configure a trusted matching certificate if needed.
+On macOS/Linux, hostnames still bind to their own loopback addresses, but the
+Windows hosts UI is unavailable: create matching aliases in your OS's hosts
+file or DNS manually. Even on Windows, manually maintained aliases work
+without enabling hosts management.
+
+Focused checks are available with `bash tests/test-hostnames.sh`; on Windows,
+run `powershell.exe -NoProfile -File tests/test-hosts-plan.ps1` for in-memory
+hosts-block planning tests. These checks never edit the real hosts file.
 
 Add saved SSH shells with:
 
@@ -122,6 +178,7 @@ setup. See `tunnels.conf.example` for a template.
 | Arrow keys | Select among the first nine saved shells |
 | `Enter` | Open the selected shell |
 | `S` | Open the full saved-shell menu |
+| `H` | Open Windows hosts management (only with `hosts_management yes`) |
 | `Ctrl+R` | Stop and restart the tunnels |
 | `Ctrl+C` | Stop tracked tunnel processes and exit |
 
@@ -132,6 +189,14 @@ setup. See `tunnels.conf.example` for a template.
 | `1`–`9` | Open the corresponding saved shell |
 | Arrow keys | Change the selection |
 | `Enter` | Open the selected shell |
+| `Esc` or `Q` | Return to the start page |
+
+### Windows hosts menu
+
+| Key | Action |
+| --- | --- |
+| `A` | Preview and explicitly confirm sync of this config's aliases |
+| `R` | Preview and explicitly confirm removal of this config's block |
 | `Esc` or `Q` | Return to the start page |
 
 The start page shows up to nine shells. The `S` menu provides access to
