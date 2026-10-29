@@ -4,14 +4,158 @@ set -uo pipefail
 # Find the script and its default config in the same directory.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
-CONFIG="${1:-$SCRIPT_DIR/tunnels.conf}"
+CONFIG="$SCRIPT_DIR/tunnels.conf"
 SSH_CONFIG_FILE="$SCRIPT_DIR/ssh_config"
+SSH_CONFIG_EXPLICIT=0
+SSH_CONFIG_B64_USED=0
+CONNECT_MODE=0
+CONNECT_TARGET_B64=""
 
-if [[ -e "$SSH_CONFIG_FILE" &&
-      ( ! -f "$SSH_CONFIG_FILE" || ! -r "$SSH_CONFIG_FILE" ) ]]; then
-    echo "SSH config must be a readable regular file: $SSH_CONFIG_FILE" >&2
-    exit 1
-fi
+set_ssh_config_path() {
+    local path=$1
+    if [[ -z "$path" ]]; then
+        echo 'SSH config path cannot be empty.' >&2
+        return 2
+    fi
+    if [[ "$path" == '~' || "$path" == '~/'* ]]; then
+        if [[ -z "${HOME:-}" ]]; then
+            echo 'Cannot expand SSH config path: HOME is not set.' >&2
+            return 2
+        fi
+        if [[ "$path" == '~' ]]; then
+            path=$HOME
+        else
+            path="${HOME%/}/${path#\~/}"
+        fi
+    fi
+    [[ "$path" == /* ]] || path="$PWD/$path"
+    SSH_CONFIG_FILE=$path
+    SSH_CONFIG_EXPLICIT=1
+}
+
+decode_base64() {
+    if [[ "$(uname -s)" == Darwin ]]; then
+        printf '%s' "$1" | base64 -D
+    else
+        printf '%s' "$1" | base64 -d
+    fi
+}
+
+parse_cli_args() {
+    local config_seen=0 ssh_config_seen=0 path
+
+    CONFIG="$SCRIPT_DIR/tunnels.conf"
+    SSH_CONFIG_FILE="$SCRIPT_DIR/ssh_config"
+    SSH_CONFIG_EXPLICIT=0
+    SSH_CONFIG_B64_USED=0
+    CONNECT_MODE=0
+    CONNECT_TARGET_B64=""
+
+    while (($#)); do
+        case "$1" in
+            --ssh-config|-cssh)
+                if ((ssh_config_seen)) || (($# < 2)) || [[ -z "$2" || "$2" == -* ]]; then
+                    echo 'Usage: tunnels.sh [TUNNELS_CONFIG] [--ssh-config|-cssh SSH_CONFIG]' >&2
+                    return 2
+                fi
+                set_ssh_config_path "$2" || return $?
+                ssh_config_seen=1
+                shift 2
+                ;;
+            --ssh-config=*|-cssh=*)
+                if ((ssh_config_seen)); then
+                    echo 'SSH config was specified more than once.' >&2
+                    return 2
+                fi
+                path=${1#*=}
+                set_ssh_config_path "$path" || return $?
+                ssh_config_seen=1
+                shift
+                ;;
+            --connect-base64)
+                if ((CONNECT_MODE)) || (($# < 2)) ||
+                   [[ ! "$2" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+                    echo 'Invalid encoded SSH target.' >&2
+                    return 2
+                fi
+                CONNECT_MODE=1
+                CONNECT_TARGET_B64=$2
+                shift 2
+                ;;
+            --ssh-config-b64)
+                if ((ssh_config_seen)) || (($# < 2)); then
+                    echo 'Invalid internal SSH config argument.' >&2
+                    return 2
+                fi
+                SSH_CONFIG_B64_USED=1
+                if [[ "$2" != - ]]; then
+                    if [[ ! "$2" =~ ^[A-Za-z0-9+/]+={0,2}$ ]] ||
+                       ! path=$(decode_base64 "$2"); then
+                        echo 'Invalid encoded SSH config path.' >&2
+                        return 2
+                    fi
+                    if [[ "$path" != /* ]]; then
+                        echo 'Encoded SSH config path must be absolute.' >&2
+                        return 2
+                    fi
+                    SSH_CONFIG_FILE=$path
+                    SSH_CONFIG_EXPLICIT=1
+                fi
+                ssh_config_seen=1
+                shift 2
+                ;;
+            --)
+                shift
+                if ((CONNECT_MODE)) || ((config_seen)) || (($# > 1)); then
+                    echo 'Usage: tunnels.sh [TUNNELS_CONFIG] [--ssh-config|-cssh SSH_CONFIG]' >&2
+                    return 2
+                fi
+                if (($# == 1)); then CONFIG=$1; fi
+                config_seen=1
+                if (($# == 1)); then shift; fi
+                ;;
+            -* )
+                echo "Unknown option: $1" >&2
+                echo 'Usage: tunnels.sh [TUNNELS_CONFIG] [--ssh-config|-cssh SSH_CONFIG]' >&2
+                return 2
+                ;;
+            *)
+                if ((CONNECT_MODE)) || ((config_seen)); then
+                    echo 'Only one TunnelWizard config path may be supplied.' >&2
+                    return 2
+                fi
+                CONFIG=$1
+                config_seen=1
+                shift
+                ;;
+        esac
+    done
+
+    if ((SSH_CONFIG_B64_USED && !CONNECT_MODE)); then
+        echo 'Internal SSH config option requires --connect-base64.' >&2
+        return 2
+    fi
+    if ((CONNECT_MODE && config_seen)); then
+        echo 'Internal SSH connection mode does not accept a TunnelWizard config path.' >&2
+        return 2
+    fi
+}
+
+validate_ssh_config() {
+    if ((SSH_CONFIG_EXPLICIT)); then
+        if [[ ! -f "$SSH_CONFIG_FILE" || ! -r "$SSH_CONFIG_FILE" ]]; then
+            echo "SSH config must be a readable regular file: $SSH_CONFIG_FILE" >&2
+            return 1
+        fi
+    elif [[ -e "$SSH_CONFIG_FILE" &&
+            ( ! -f "$SSH_CONFIG_FILE" || ! -r "$SSH_CONFIG_FILE" ) ]]; then
+        echo "SSH config must be a readable regular file: $SSH_CONFIG_FILE" >&2
+        return 1
+    fi
+}
+
+parse_cli_args "$@" || exit $?
+validate_ssh_config || exit $?
 
 ssh_with_config() {
     if [[ -f "$SSH_CONFIG_FILE" ]]; then
@@ -21,22 +165,9 @@ ssh_with_config() {
     fi
 }
 
-# A newly opened system-terminal window runs the script in this lightweight
-# mode. It connects directly instead of starting another tunnel dashboard.
-if [[ "${1:-}" == --connect-base64 ]]; then
-    encoded_target="${2:-}"
-
-    if [[ -z "$encoded_target" ||
-          ! "$encoded_target" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
-        echo 'Invalid encoded SSH target.' >&2
-        exit 2
-    fi
-
-    if [[ "$(uname -s)" == Darwin ]]; then
-        target=$(printf '%s' "$encoded_target" | base64 -D) || exit 2
-    else
-        target=$(printf '%s' "$encoded_target" | base64 -d) || exit 2
-    fi
+# A newly opened system-terminal window runs this lightweight connection mode.
+if ((CONNECT_MODE)); then
+    target=$(decode_base64 "$CONNECT_TARGET_B64") || exit 2
 
     if [[ -z "$target" || "$target" == -* ]]; then
         echo 'Invalid SSH target.' >&2
@@ -1646,7 +1777,11 @@ open_shell_window() {
     local target=${SHELL_TARGETS[$index]}
     local name=${SHELL_NAMES[$index]}
     local wezterm_bin bash_bin bash_win workdir_win
-    local encoded_title encoded_target
+    local encoded_title encoded_target encoded_ssh_config=-
+
+    if ((SSH_CONFIG_EXPLICIT)); then
+        encoded_ssh_config=$(printf '%s' "$SSH_CONFIG_FILE" | base64 | tr -d '\r\n')
+    fi
 
     # Keep the original WezTerm behavior when running inside WezTerm.
     if running_in_wezterm && command -v wezterm >/dev/null 2>&1; then
@@ -1661,8 +1796,8 @@ open_shell_window() {
 
         if "$wezterm_bin" cli spawn --new-window --cwd "$HOME" -- \
             "$bash_bin" -c \
-            'printf "\033]1337;SetUserVar=SSH_WIZARD_TITLE=%s\007" "$2"; if [[ -f "$3" ]]; then exec ssh -F "$3" "$1"; else exec ssh "$1"; fi' \
-            wizard-shell "$target" "$encoded_title" "$SSH_CONFIG_FILE" \
+            'printf "\033]1337;SetUserVar=SSH_WIZARD_TITLE=%s\007" "$2"; if [[ "$4" == 1 && ( ! -f "$3" || ! -r "$3" ) ]]; then echo "SSH config is no longer readable: $3" >&2; exit 1; fi; if [[ -f "$3" ]]; then exec ssh -F "$3" "$1"; else exec ssh "$1"; fi' \
+            wizard-shell "$target" "$encoded_title" "$SSH_CONFIG_FILE" "$SSH_CONFIG_EXPLICIT" \
             </dev/null >/dev/null 2>&1; then
             MESSAGE="Opened '$name' in new window."
             return 0
@@ -1688,8 +1823,9 @@ open_shell_window() {
                 if WIZARD_BASH_EXE="$bash_win" \
                    WIZARD_WORKDIR="$workdir_win" \
                    WIZARD_TARGET_B64="$encoded_target" \
+                   WIZARD_SSH_CONFIG_B64="$encoded_ssh_config" \
                    powershell.exe -NoProfile -NonInteractive -Command \
-                   'try { $launchArgs = "-c `"exec bash ./tunnels.sh --connect-base64 " + $env:WIZARD_TARGET_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
+                   'try { $launchArgs = "-c `"exec bash ./tunnels.sh --connect-base64 " + $env:WIZARD_TARGET_B64 + " --ssh-config-b64 " + $env:WIZARD_SSH_CONFIG_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
                    </dev/null >/dev/null 2>&1; then
                     MESSAGE="Opened '$name' in new window."
                     return 0
@@ -1704,11 +1840,11 @@ open_shell_window() {
                 if osascript \
                     -e 'on run argv' \
                     -e 'tell application "Terminal"' \
-                    -e 'do script ("bash " & quoted form of (item 1 of argv) & " --connect-base64 " & item 2 of argv)' \
+                    -e 'do script ("bash " & quoted form of (item 1 of argv) & " --connect-base64 " & item 2 of argv & " --ssh-config-b64 " & item 3 of argv)' \
                     -e 'activate' \
                     -e 'end tell' \
                     -e 'end run' \
-                    -- "$SCRIPT_PATH" "$encoded_target" \
+                    -- "$SCRIPT_PATH" "$encoded_target" "$encoded_ssh_config" \
                     </dev/null >/dev/null 2>&1; then
                     MESSAGE="Opened '$name' in new window."
                     return 0
@@ -1721,12 +1857,14 @@ open_shell_window() {
             if command -v xdg-terminal-exec >/dev/null 2>&1; then
                 xdg-terminal-exec bash "$SCRIPT_PATH" \
                     --connect-base64 "$encoded_target" \
+                    --ssh-config-b64 "$encoded_ssh_config" \
                     </dev/null >/dev/null 2>&1 &
                 MESSAGE="Opened '$name' in new window."
                 return 0
             elif command -v x-terminal-emulator >/dev/null 2>&1; then
                 x-terminal-emulator -e bash "$SCRIPT_PATH" \
                     --connect-base64 "$encoded_target" \
+                    --ssh-config-b64 "$encoded_ssh_config" \
                     </dev/null >/dev/null 2>&1 &
                 MESSAGE="Opened '$name' in new window."
                 return 0
@@ -1936,6 +2074,9 @@ request_restart() {
     fi
 
     trap - INT TERM EXIT WINCH
+    if ((SSH_CONFIG_EXPLICIT)); then
+        exec "$SCRIPT_PATH" "$CONFIG" --ssh-config "$SSH_CONFIG_FILE"
+    fi
     exec "$SCRIPT_PATH" "$CONFIG"
 }
 

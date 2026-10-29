@@ -61,28 +61,44 @@ bash ./tunnels.sh /path/to/another.conf
 ```
 
 An explicitly supplied relative path is interpreted relative to your
-current working directory.
+current working directory. If its name begins with `-`, put `--` before the
+path (after any options): `bash ./tunnels.sh -- ./-tunnels.conf`.
+
+To select a separate OpenSSH client config, pass `--ssh-config` (or its `-cssh`
+shorthand) with its path. It works before or after the optional TunnelWizard
+config path:
+
+```bash
+bash ./tunnels.sh --ssh-config ~/.ssh/work.conf
+bash ./tunnels.sh /path/to/tunnels.conf -cssh ./ssh/proxmox.conf
+```
+
+The SSH config path is also interpreted relative to your current directory
+(and a `~/...` path is expanded from your home directory). The default remains
+`ssh_config` beside `tunnels.sh`, when that file exists.
 
 > **Security:** The script sources its config as Bash code. Only use a
 > config file you trust.
 
-To load a project-local OpenSSH client config, copy the example as well:
+To create the default project-local OpenSSH client config, copy the example:
 
 ```bash
 cp ssh_config.example ssh_config
 ```
 
 `ssh_config` is optional and is automatically loaded for all tunnel and
-saved-shell SSH connections when it exists beside `tunnels.sh`. It uses standard
-OpenSSH client configuration syntax. TunnelWizard supplies the tunnel's
-target, username, identity file, and port-forward options on the SSH command
-line; the custom file is useful for settings such as `ProxyJump`, `HostName`,
-keepalives, and additional host matching.
+saved-shell SSH connections when it exists beside `tunnels.sh`; `--ssh-config`
+selects a different file for both. They use standard OpenSSH client
+configuration syntax. TunnelWizard supplies the tunnel's target, username,
+identity file, and port-forward options on the SSH command line; the custom
+file is useful for settings such as `ProxyJump`, `HostName`, keepalives, and
+additional host matching. The example includes `~/.ssh/config` by default, so
+your usual aliases and options remain available when you copy it.
 
-Because TunnelWizard passes this file with OpenSSH's `-F` option, it replaces
-the usual per-user and system-wide SSH config files rather than merging with
-them automatically. Add `Include ~/.ssh/config` to `ssh_config` if you want
-to reuse your normal per-user settings. See the official
+Because TunnelWizard passes the selected file with OpenSSH's `-F` option, it
+replaces the usual per-user and system-wide SSH config files rather than
+merging with them automatically. Add an `Include` directive to a custom file
+if you want to reuse other SSH settings. See the official
 [OpenSSH client configuration reference](https://man.openbsd.org/ssh_config)
 and the [`ssh_config.example`](ssh_config.example) template.
 
@@ -166,8 +182,9 @@ at `https://pmx-one` and `https://pmx-two`.
 Your browser may warn that a Proxmox certificate does
 not match the local alias; configure a trusted matching certificate if needed.
 
-Focused checks are available with `bash tests/test-hostnames.sh`; on Windows,
-run `powershell.exe -NoProfile -File tests/test-hosts-plan.ps1` for in-memory
+Focused checks are available with `bash tests/test-hostnames.sh` and
+`bash tests/test-ssh-config-cli.sh`; on Windows, run
+`powershell.exe -NoProfile -File tests/test-hosts-plan.ps1` for in-memory
 hosts-presence and block-planning tests. These checks never edit the real
 hosts file.
 

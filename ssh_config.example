@@ -3,9 +3,10 @@
 # https://man.openbsd.org/ssh_config
 #
 # When ssh_config exists, TunnelWizard passes it with -F to its tunnel and
-# saved-shell SSH commands. This replaces normal user and system SSH configs.
-# Uncomment the next line if you want to include your usual per-user config:
-# Include ~/.ssh/config
+# saved-shell SSH commands. Include your usual per-user config so its Host
+# aliases and options remain available. This Include is ignored if the file
+# does not exist.
+Include ~/.ssh/config
 
 # Example alias; use "bastion" as SSH_HOST or SSH_TARGET in tunnels.conf.
 # Host bastion
