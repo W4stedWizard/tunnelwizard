@@ -3,7 +3,7 @@
 A Bash terminal UI for starting and monitoring SSH tunnels, with saved SSH
 shell connections that open in separate terminal windows.
 
-<img width="728" height="493" alt="image" src="https://github.com/user-attachments/assets/5385af21-4180-409a-8a78-52d8889cb266" />
+<img width="739" height="499" alt="image" src="https://github.com/user-attachments/assets/1b4fa47c-8a22-405b-b8e8-143da60fbd82" />
 
 ## Requirements
 
@@ -120,40 +120,24 @@ matching hosts-file or DNS entry is installed.
 
 ### Local hostnames and Windows hosts file
 
+Currently this feature is only usable on windows.
+
 The Windows hosts-file UI is **off by default**. Add `hosts_management yes` to
 the selected `.conf` to make the `H` menu available. Opting in does **not**
-change hosts on startup, when restarting tunnels, or on exit. The `H` page
-labels its IP / HOSTNAME table with the selected config filename (without a
-  trailing `.conf`) and warns that hosts entries **persist after exit**. Its
-  controls and the `Mapped | Absent | Conflict` legend are at the bottom. On
+change hosts on startup, when restarting tunnels, or on exit. On
   opening the Hosts page, an **automatic, read-only check** looks at the actual
-  Windows hosts file: bold purple hostnames and IPs have an exact,
-  conflict-free mapping to the configured loopback IP; grey means absent; amber
-  means the hostname also maps to a different address. Subtle alternating row
-  backgrounds aid scanning. A matching alias maintained by hand also counts as
-  mapped. This check does not write hosts, flush DNS, or request administrator
-  privileges. Presence is checked again after each hosts action; a read failure
-  leaves names grey and shows a warning. The colors describe hosts-file
-  mappings, **not** DNS cache state or whether an SSH tunnel is running.
+  Windows hosts file. A matching alias maintained by hand also counts as mapped. 
+  This check does not write hosts, flush DNS, or request administrator 
+  privileges. Presence is checked again after each hosts action. The colors 
+  describe hosts-file mappings, **not** DNS cache state or whether an SSH 
+  tunnel is running.
 
-Choose `A` to **Apply** (preview and sync **this config's** aliases), or `D`
-to preview and delete **this config's** managed block (including stale aliases
-after editing the config). The preview is an ordered, colored diff: grey lines
-are unchanged, red lines are removed, and green lines are added; markers
-appear alongside the entries. No-op previews make no edit and do not flush DNS.
-
-**`Ctrl+D` is a separate, all-config cleanup action.** It previews deletion of
+**`Ctrl+D` previews deletion of
 **ALL well-formed TunnelWizard-managed blocks across every config**, not just
 the selected config. It does not delete unrelated hosts-file lines, but it
 *will* remove the aliases managed by other TunnelWizard configs, even if you
 are currently viewing a different config. Review the full preview and
 explicitly confirm the all-config removal before any edit or UAC prompt.
-`D` never performs this global cleanup. Every edit requires an explicit
-confirmation after preview; the final prompt warns that administrator/UAC
-permission will be requested to make the edit. Cancellation, including UAC
-cancellation, leaves hosts unchanged. Hosts edits persist after closing the
-wizard, and removal is always manual. If the hosts file changes after preview,
-the operation refuses to apply; preview again.
 
 Each config owns one marked block identified by a hash of its canonical full
 path; the marker also shows its filename. Two configs with the same filename
@@ -166,7 +150,7 @@ wizard nor SSH runs as administrator. After **successful edits**, the helper
 runs `ipconfig /flushdns` automatically and reports separately if flushing
 fails. No network reboot is required.
 
-For example, both Proxmox nodes may use local port 443 to reach their remote
+For example, two Proxmox nodes may use local port 443 to reach their remote
 port 8006, while browsing distinct local hostnames:
 
 ```bash
@@ -177,21 +161,17 @@ machine proxmox-two pmx-two.example.invalid alice ~/.ssh/id_ed25519 no
 tunnel "Proxmox two" 443:127.0.0.1:8006 pmx-two
 ```
 
-After confirming `H` → `A` (Apply), use `https://pmx-one` and `https://pmx-two`.
-Alternatively use `8006:127.0.0.1:8006 pmx-one` to browse
-`https://pmx-one:8006`. Your browser may warn that a Proxmox certificate does
+After confirming `H` → `A` (Apply), you can load the respective webinterfaces
+at `https://pmx-one` and `https://pmx-two`.
+Your browser may warn that a Proxmox certificate does
 not match the local alias; configure a trusted matching certificate if needed.
-On macOS/Linux, hostnames still bind to their own loopback addresses, but the
-Windows hosts UI is unavailable: create matching aliases in your OS's hosts
-file or DNS manually. Even on Windows, manually maintained aliases work
-without enabling hosts management.
 
 Focused checks are available with `bash tests/test-hostnames.sh`; on Windows,
 run `powershell.exe -NoProfile -File tests/test-hosts-plan.ps1` for in-memory
 hosts-presence and block-planning tests. These checks never edit the real
 hosts file.
 
-Add saved SSH shells with:
+Add saved SSH shells to the conf with:
 
 ```bash
 shell DISPLAY_NAME SSH_TARGET
@@ -199,41 +179,6 @@ shell DISPLAY_NAME SSH_TARGET
 
 `SSH_TARGET` can be `user@host` or an SSH alias understood by your SSH
 setup. See `tunnels.conf.example` for a template.
-
-## Controls
-
-### Start page
-
-| Key | Action |
-| --- | --- |
-| `1`–`9` | Open the corresponding saved shell |
-| Arrow keys | Select among the first nine saved shells |
-| `Enter` | Open the selected shell |
-| `S` | Open the full saved-shell menu |
-| `H` | Open Windows hosts management (only with `hosts_management yes`) |
-| `Ctrl+R` | Stop and restart the tunnels |
-| `Ctrl+C` | Stop tracked tunnel processes and exit |
-
-### Saved-shell menu
-
-| Key | Action |
-| --- | --- |
-| `1`–`9` | Open the corresponding saved shell |
-| Arrow keys | Change the selection |
-| `Enter` | Open the selected shell |
-| `Esc` or `Q` | Return to the start page |
-
-### Windows hosts menu
-
-| Key | Action |
-| --- | --- |
-| `A` | Apply: preview and explicitly confirm sync of this config's aliases |
-| `D` | Preview and explicitly confirm deletion of this config's host block |
-| `Ctrl+D` | Preview and explicitly confirm deletion of **all** TunnelWizard host blocks across **every** config |
-| `Esc` or `Q` | Return to the start page |
-
-The start page shows up to nine shells. The `S` menu provides access to
-the full list.
 
 ## Where saved shells open
 
@@ -254,10 +199,6 @@ fallback. If no supported window launcher is available, it runs the SSH
 session in the wizard's current window and returns to the wizard when that
 session ends.
 
-The dashboard reports a successful new-window request as
-`Opened 'NAME' in new window.` A launcher accepting a request does not,
-by itself, verify that the remote SSH login succeeded.
-
 ## WezTerm configuration
 
 A custom WezTerm Lua config is optional. If you use one, you can keep
@@ -266,10 +207,6 @@ Otherwise, omit that option to use your normal WezTerm configuration.
 
 See the official [WezTerm configuration files documentation](https://wezterm.org/config/files.html)
 for the Lua config format.
-
-The WezTerm-specific shell-window title variable is named
-`SSH_WIZARD_TITLE`. Your Lua configuration can use it if you have set up
-custom window titles.
 
 SSH private keys do not need to be in the project folder; they can remain
 in your normal `~/.ssh` directory.
