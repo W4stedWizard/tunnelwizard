@@ -226,6 +226,10 @@ EXIT_REQUESTED=0
 REDRAW_NEEDED=1
 FORCE_REPAINT=1
 RESIZE_EVENT=0
+# Input remains responsive at 10 Hz; child-process status checks are slower.
+INPUT_POLL_TIMEOUT=0.1
+TUNNEL_POLL_INTERVAL=2
+NEXT_TUNNEL_POLL=0
 USE_COLOUR=0
 ALT_SCREEN=0
 TTY_CONFIGURED=0
@@ -235,6 +239,7 @@ LOG_DIR=""
 
 TERM_WIDTH=80
 TERM_HEIGHT=24
+TERM_SIZE_VALID=0
 BODY_ROW=1
 BODY_LAST_ROW=1
 PAINTED_MODE=""
@@ -245,6 +250,7 @@ declare -a ROW_CACHE_VALID=()
 declare -a ROW_SEEN=()
 RENDER_BUFFER=""
 RENDER_CAPTURE_FILE=""
+RENDER_CAPTURE_DISABLED=0
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
     USE_COLOUR=1
@@ -549,6 +555,34 @@ terminal_height() {
     printf '%s' "$height"
 }
 
+ensure_terminal_size() {
+    if ((!TERM_SIZE_VALID)); then
+        TERM_WIDTH=$(terminal_width)
+        TERM_HEIGHT=$(terminal_height)
+        TERM_SIZE_VALID=1
+    fi
+}
+
+create_render_capture_file() {
+    local temp_dir candidate
+    local -a temp_dirs=()
+
+    [[ -n "${XDG_RUNTIME_DIR:-}" ]] && temp_dirs+=("$XDG_RUNTIME_DIR")
+    temp_dirs+=(/dev/shm "${TMPDIR:-/tmp}" /tmp)
+    for temp_dir in "${temp_dirs[@]}"; do
+        [[ -d "$temp_dir" && -w "$temp_dir" ]] || continue
+        if candidate=$(mktemp "$temp_dir/ssh-tunnel-render.XXXXXX" 2>/dev/null) &&
+           [[ -n "$candidate" && -f "$candidate" ]]; then
+            RENDER_CAPTURE_FILE=$candidate
+            return 0
+        fi
+    done
+
+    RENDER_CAPTURE_FILE=""
+    RENDER_CAPTURE_DISABLED=1
+    return 1
+}
+
 is_windows_shell() {
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*) return 0 ;;
@@ -597,8 +631,7 @@ begin_screen() {
     local footer_rows=$1
     local force_clear=0
 
-    TERM_WIDTH=$(terminal_width)
-    TERM_HEIGHT=$(terminal_height)
+    ensure_terminal_size
     BODY_ROW=1
     BODY_LAST_ROW=$((TERM_HEIGHT - footer_rows))
     ROW_SEEN=()
@@ -611,7 +644,11 @@ begin_screen() {
         ROW_CACHE_VALID=()
     fi
 
-    RENDER_CAPTURE_FILE=$(mktemp "${TMPDIR:-/tmp}/ssh-tunnel-render.XXXXXX") || return 1
+    if [[ -z "$RENDER_CAPTURE_FILE" || ! -f "$RENDER_CAPTURE_FILE" ]]; then
+        if ((!RENDER_CAPTURE_DISABLED)); then
+            create_render_capture_file || true
+        fi
+    fi
 
     if ((force_clear)); then
         RENDER_BUFFER=$'\033[H\033[J'
@@ -627,8 +664,22 @@ paint_row() {
     local row=$1 content render_status=0
     shift
 
-    "$@" >"$RENDER_CAPTURE_FILE" || render_status=$?
-    content=$(<"$RENDER_CAPTURE_FILE")
+    if [[ -n "$RENDER_CAPTURE_FILE" && -f "$RENDER_CAPTURE_FILE" &&
+          -w "$RENDER_CAPTURE_FILE" ]]; then
+        "$@" >"$RENDER_CAPTURE_FILE" || render_status=$?
+        content=$(<"$RENDER_CAPTURE_FILE")
+    else
+        if [[ -n "$RENDER_CAPTURE_FILE" ]]; then
+            rm -f -- "$RENDER_CAPTURE_FILE" 2>/dev/null || true
+        fi
+        RENDER_CAPTURE_FILE=""
+        RENDER_CAPTURE_DISABLED=1
+        if content=$("$@"); then
+            render_status=0
+        else
+            render_status=$?
+        fi
+    fi
     ROW_SEEN[$row]=1
 
     if ((render_status != 0)); then
@@ -661,10 +712,7 @@ finish_screen() {
     done
 
     printf '%s' "$RENDER_BUFFER"
-    if [[ -n "$RENDER_CAPTURE_FILE" ]]; then
-        rm -f -- "$RENDER_CAPTURE_FILE"
-        RENDER_CAPTURE_FILE=""
-    fi
+    # Keep the capture file for the next paint; cleanup removes it on exit.
     RENDER_BUFFER=""
 }
 
@@ -1161,7 +1209,8 @@ render_shell_menu() {
     local cell_width grid_rows total_lines available selected_line
     local max_scroll line grid_row footer_rows
 
-    if (($(terminal_width) > ${#full})); then
+    ensure_terminal_size
+    if ((TERM_WIDTH > ${#full})); then
         footer_rows=1
     else
         footer_rows=2
@@ -1239,7 +1288,7 @@ render_hosts_menu() {
     local footer_rows=2 index config_name
     config_name=${CONFIG##*/}
     [[ "$config_name" == *.conf && "$config_name" != .conf ]] && config_name=${config_name%.conf}
-    TERM_WIDTH=$(terminal_width)
+    ensure_terminal_size
     if is_windows_shell && ((TERM_WIDTH < 96)); then
         footer_rows=3
     fi
@@ -1619,7 +1668,7 @@ cleanup() {
 
 trap cleanup EXIT
 trap 'EXIT_REQUESTED=1' INT TERM
-trap 'RESIZE_EVENT=$((RESIZE_EVENT + 1)); FORCE_REPAINT=1; REDRAW_NEEDED=1' WINCH
+trap 'RESIZE_EVENT=$((RESIZE_EVENT + 1)); TERM_SIZE_VALID=0; FORCE_REPAINT=1; REDRAW_NEEDED=1' WINCH
 
 start_one() {
     local id=$1
@@ -1719,7 +1768,7 @@ start_with_retry() {
     done
 }
 
-poll_tunnels() {
+poll_tunnel_processes() {
     local index pid id
 
     for index in "${!PIDS[@]}"; do
@@ -1877,12 +1926,12 @@ open_shell_window() {
 }
 
 read_key() {
-    local first="" next=""
+    local first="" next="" timeout=${1:-0.1}
     local i
 
     KEY=""
 
-    if ! IFS= read -r -s -N 1 -t 0.25 -u 3 first 2>/dev/null; then
+    if ! IFS= read -r -s -N 1 -t "$timeout" -u 3 first 2>/dev/null; then
         return 1
     fi
 
@@ -2073,6 +2122,11 @@ request_restart() {
         TTY_OPEN=0
     fi
 
+    if [[ -n "$RENDER_CAPTURE_FILE" ]]; then
+        rm -f -- "$RENDER_CAPTURE_FILE"
+        RENDER_CAPTURE_FILE=""
+    fi
+
     trap - INT TERM EXIT WINCH
     if ((SSH_CONFIG_EXPLICIT)); then
         exec "$SCRIPT_PATH" "$CONFIG" --ssh-config "$SSH_CONFIG_FILE"
@@ -2131,13 +2185,16 @@ render_screen
 while true; do
     ((EXIT_REQUESTED)) && exit 130
 
-    poll_tunnels
+    if ((SECONDS >= NEXT_TUNNEL_POLL)); then
+        poll_tunnel_processes
+        NEXT_TUNNEL_POLL=$((SECONDS + TUNNEL_POLL_INTERVAL))
+    fi
 
     if ((REDRAW_NEEDED)); then
         render_screen
     fi
 
-    if ! read_key; then
+    if ! read_key "$INPUT_POLL_TIMEOUT"; then
         continue
     fi
 

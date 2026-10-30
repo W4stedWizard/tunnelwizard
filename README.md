@@ -182,8 +182,8 @@ at `https://pmx-one` and `https://pmx-two`.
 Your browser may warn that a Proxmox certificate does
 not match the local alias; configure a trusted matching certificate if needed.
 
-Focused checks are available with `bash tests/test-hostnames.sh` and
-`bash tests/test-ssh-config-cli.sh`; on Windows, run
+Focused checks are available with `bash tests/test-hostnames.sh`,
+`bash tests/test-ssh-config-cli.sh`, and `bash tests/test-render-capture.sh`; on Windows, run
 `powershell.exe -NoProfile -File tests/test-hosts-plan.ps1` for in-memory
 hosts-presence and block-planning tests. These checks never edit the real
 hosts file.
