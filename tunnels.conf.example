@@ -5,6 +5,7 @@
 #   machine ALIAS SSH_HOST SSH_USER IDENTITY_FILE GROUP
 #   tunnel  DISPLAY_NAME LOCAL_FORWARD [LOCAL_HOSTNAME]
 #   shell   DISPLAY_NAME SSH_TARGET
+#   custom_command DISPLAY_NAME LOCAL_BASH_COMMAND
 #   hosts_management yes|no
 #
 # GROUP=yes: forwards for this machine share one SSH process.
@@ -33,6 +34,10 @@ tunnel "Dev database"  15432:127.0.0.1:5432
 # After explicitly syncing in H, browse https://pmx-one and https://pmx-two.
 # For https://pmx-one:8006 instead, use 8006:127.0.0.1:8006 pmx-one.
 
-# Saved shells open in separate WezTerm windows.
+# Saved SSH shells and local Bash commands open in separate terminal windows
+# when a supported launcher is available. Their declaration order determines
+# the shared quick-launch grid; they need no machine or tunnel entry.
 shell "Web server"      alice@web.example.invalid
 shell "Development box" alice@dev.example.invalid
+# custom_command "Open project" 'cd ~/projects/demo && exec bash'
+# Host-wide aliases are managed separately with A in the UI (~/.bashrc).

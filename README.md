@@ -1,7 +1,7 @@
 # SSH Tunnel Wizard
 
 A Bash terminal UI for starting and monitoring SSH tunnels, with saved SSH
-shell connections that open in separate terminal windows.
+shell connections and local commands that open in separate terminal windows.
 
 <img width="733" height="494" alt="image" src="https://github.com/user-attachments/assets/a6f58d96-5ef5-42c1-8ec0-687d55ff5280" />
 
@@ -10,7 +10,8 @@ shell connections that open in separate terminal windows.
 - Bash
 - OpenSSH client (`ssh`)
 - An interactive terminal
-- `base64`, for opening saved shells through a system terminal
+- `base64`, for opening saved shells or commands through a system terminal
+- `cksum` and `cmp`, for safe Bash alias profile updates
 
 WezTerm is optional. On Windows, the non-WezTerm window fallback uses
 PowerShell and Git for Windows. On macOS it uses Terminal. On Linux it looks
@@ -27,6 +28,7 @@ together in the resulting folder:
 ssh-tunnel-wizard/
 ├── README.md
 ├── tunnels.sh
+├── aliases-manager.sh   # Host-wide ~/.bashrc alias block management
 ├── hosts-manager.ps1     # Windows-only, on-demand hosts-file helper
 ├── tunnels.conf.example
 ├── tunnels.conf          # Your local copy; do not commit it
@@ -183,27 +185,70 @@ Your browser may warn that a Proxmox certificate does
 not match the local alias; configure a trusted matching certificate if needed.
 
 Focused checks are available with `bash tests/test-hostnames.sh`,
-`bash tests/test-ssh-config-cli.sh`, and `bash tests/test-render-capture.sh`; on Windows, run
+`bash tests/test-ssh-config-cli.sh`, `bash tests/test-render-capture.sh`,
+`bash tests/test-quick-launch.sh` and `bash tests/test-aliases.sh`; on Windows, run
 `powershell.exe -NoProfile -File tests/test-hosts-plan.ps1` for in-memory
 hosts-presence and block-planning tests. These checks never edit the real
 hosts file.
 
-Add saved SSH shells to the conf with:
+Add saved SSH shells and local Bash commands to the conf with:
 
 ```bash
 shell DISPLAY_NAME SSH_TARGET
+custom_command DISPLAY_NAME LOCAL_BASH_COMMAND
 ```
 
 `SSH_TARGET` can be `user@host` or an SSH alias understood by your SSH
-setup. See `tunnels.conf.example` for a template.
+setup. For example, `custom_command "Open project" 'cd ~/projects/demo && exec bash'`
+launches a local interactive Bash command (it does not run over SSH). Use
+quotes around labels or commands containing spaces or shell metacharacters.
+The config is sourced as Bash, so quote `$` and other expressions you want
+expanded **when the command runs**, not when the config loads. Entries appear
+in declaration order, mixing shells and commands in the first nine dashboard
+shortcuts and the complete `S` menu. Use 1–9, arrows and Enter as before;
+commands do not become tracked tunnel processes. See `tunnels.conf.example`.
 
-## Where saved shells open
+### Host-wide Bash aliases
+
+Press `A` on the dashboard for the separate Bash alias manager. It lists only
+aliases in its marked block in `~/.bashrc` (including Git Bash on Windows).
+Press `A` to add, `E` to edit a selected name or command, `D` to delete it
+(with confirmation), `I` to import, `W` to write an export, or `C` to **Clear
+All** managed aliases (with explicit confirmation). Use ↑/↓ to select;
+Esc/Q returns. If none are managed, Clear All is a no-op. For example, enter
+`op` and `./script-that-opens-wezterm.sh`, or `xxx` and `exit`. Use valid Bash
+identifier names, and single-line command values. These aliases are available
+in **new interactive Bash sessions outside TunnelWizard**, not just this config;
+they are not added to the quick-launch grid. Existing terminal sessions may
+need `source ~/.bashrc` or a new terminal to pick up changes. TunnelWizard does
+not manage `.zshrc`, source `.bashrc` to display aliases, or change any content
+outside its marked block. It refuses malformed/duplicate markers, unexpected
+content inside the block, symlinked profiles and failed writes with a message;
+edit such a profile manually before retrying.
+
+Import (`I`) reads **`./bash-aliases.conf` from the directory where you launched
+TunnelWizard**, not from the directory containing `tunnels.sh`. Write (`W`)
+exports the currently managed aliases to that same path. Both actions use
+canonical single-line Bash syntax, for example `alias op='echo hello'`; embedded
+single quotes use Bash's ` '\'' ` escaping (without the surrounding spaces).
+An import allows empty lines and `#` comments but rejects noncanonical or
+malformed lines **without editing the profile**. The file is never sourced or
+evaluated. Existing managed names and later occurrences of the same name in
+the import are skipped; the first unique definition wins, and a paged report
+lists every skipped name. Valid unique entries are saved in one profile update.
+Export replaces the file atomically where possible; it refuses symlinks and
+non-regular files and asks before overwriting an existing file. An export is
+only a snapshot: later alias edits do not update `bash-aliases.conf`, and the
+file is not imported again unless you press `I`. Clear All removes only the
+TunnelWizard-managed block, preserving the rest of `~/.bashrc`.
+
+## Where saved shells and local commands open
 
 The wizard detects whether it is running inside WezTerm.
 
-- **Inside WezTerm:** it uses `wezterm cli spawn --new-window`, preserving
-  the existing WezTerm-specific title variable. The `wezterm` command must
-  be available in Bash's `PATH`.
+- **Inside WezTerm:** it uses `wezterm cli spawn --new-window`; saved SSH
+  shells retain their existing WezTerm-specific title variable. The `wezterm`
+  command must be available in Bash's `PATH`.
 - **Outside WezTerm on Windows:** it launches Git Bash as a new console
   application through PowerShell. Windows chooses the window according to
   its configured default console terminal host.
@@ -213,8 +258,9 @@ The wizard detects whether it is running inside WezTerm.
 
 If the WezTerm CLI fails, the wizard also tries the operating-system
 fallback. If no supported window launcher is available, it runs the SSH
-session in the wizard's current window and returns to the wizard when that
-session ends.
+session or local command in the wizard's current window and returns when it
+ends. Local commands run under interactive Bash and the new window waits for
+Enter after the command exits so output remains visible.
 
 ## WezTerm configuration
 

@@ -6,10 +6,13 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
 CONFIG="$SCRIPT_DIR/tunnels.conf"
 SSH_CONFIG_FILE="$SCRIPT_DIR/ssh_config"
+ALIAS_CONFIG_FILE="$PWD/bash-aliases.conf"
 SSH_CONFIG_EXPLICIT=0
 SSH_CONFIG_B64_USED=0
 CONNECT_MODE=0
 CONNECT_TARGET_B64=""
+COMMAND_MODE=0
+COMMAND_B64=""
 
 set_ssh_config_path() {
     local path=$1
@@ -50,6 +53,8 @@ parse_cli_args() {
     SSH_CONFIG_B64_USED=0
     CONNECT_MODE=0
     CONNECT_TARGET_B64=""
+    COMMAND_MODE=0
+    COMMAND_B64=""
 
     while (($#)); do
         case "$1" in
@@ -73,13 +78,23 @@ parse_cli_args() {
                 shift
                 ;;
             --connect-base64)
-                if ((CONNECT_MODE)) || (($# < 2)) ||
+                if ((CONNECT_MODE || COMMAND_MODE)) || (($# < 2)) ||
                    [[ ! "$2" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
                     echo 'Invalid encoded SSH target.' >&2
                     return 2
                 fi
                 CONNECT_MODE=1
                 CONNECT_TARGET_B64=$2
+                shift 2
+                ;;
+            --run-command-base64)
+                if ((CONNECT_MODE || COMMAND_MODE)) || (($# < 2)) ||
+                   [[ ! "$2" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+                    echo 'Invalid encoded local command.' >&2
+                    return 2
+                fi
+                COMMAND_MODE=1
+                COMMAND_B64=$2
                 shift 2
                 ;;
             --ssh-config-b64)
@@ -106,7 +121,7 @@ parse_cli_args() {
                 ;;
             --)
                 shift
-                if ((CONNECT_MODE)) || ((config_seen)) || (($# > 1)); then
+                if ((CONNECT_MODE || COMMAND_MODE)) || ((config_seen)) || (($# > 1)); then
                     echo 'Usage: tunnels.sh [TUNNELS_CONFIG] [--ssh-config|-cssh SSH_CONFIG]' >&2
                     return 2
                 fi
@@ -120,7 +135,7 @@ parse_cli_args() {
                 return 2
                 ;;
             *)
-                if ((CONNECT_MODE)) || ((config_seen)); then
+                if ((CONNECT_MODE || COMMAND_MODE)) || ((config_seen)); then
                     echo 'Only one TunnelWizard config path may be supplied.' >&2
                     return 2
                 fi
@@ -139,6 +154,10 @@ parse_cli_args() {
         echo 'Internal SSH connection mode does not accept a TunnelWizard config path.' >&2
         return 2
     fi
+    if ((COMMAND_MODE && (config_seen || ssh_config_seen))); then
+        echo 'Internal local command mode does not accept config paths.' >&2
+        return 2
+    fi
 }
 
 validate_ssh_config() {
@@ -155,7 +174,18 @@ validate_ssh_config() {
 }
 
 parse_cli_args "$@" || exit $?
-validate_ssh_config || exit $?
+if ((!COMMAND_MODE)); then validate_ssh_config || exit $?; fi
+
+# A new terminal runs the local command without loading the wizard config.
+if ((COMMAND_MODE)); then
+    local_command=$(decode_base64 "$COMMAND_B64") || exit 2
+    [[ -n "$local_command" ]] || exit 2
+    bash -ic "$local_command"
+    command_status=$?
+    printf '\nCommand ended (exit status %s).\n' "$command_status"
+    read -r -p 'Press Enter to close this window... ' _ || true
+    exit "$command_status"
+fi
 
 ssh_with_config() {
     if [[ -f "$SSH_CONFIG_FILE" ]]; then
@@ -187,6 +217,12 @@ declare -a TUNNEL_IDS=()
 declare -a PIDS=()
 declare -a SHELL_NAMES=()
 declare -a SHELL_TARGETS=()
+declare -a QUICK_NAMES=()
+declare -a QUICK_KINDS=()
+declare -a QUICK_VALUES=()
+declare -a ALIAS_NAMES=()
+declare -a ALIAS_COMMANDS=()
+declare -a BASHRC_LINES=()
 declare -a LOCAL_HOSTNAMES=()
 declare -a LOCAL_ADDRESSES=()
 declare -A HOSTNAME_IP=()
@@ -218,6 +254,13 @@ CONFIG_ERROR=0
 UI_MODE="dashboard"
 SHELL_SELECTION=0
 MENU_SCROLL=0
+ALIAS_SELECTION=0
+ALIAS_SCROLL=0
+ALIAS_BLOCK_START=-1
+ALIAS_BLOCK_END=-1
+BASHRC_FINAL_NEWLINE=1
+BASHRC_EOL=$'\n'
+ALIAS_ERROR=""
 MESSAGE=""
 KEY=""
 
@@ -260,7 +303,9 @@ fi
 #   machine ALIAS SSH_HOST SSH_USER IDENTITY_FILE GROUP
 #   tunnel  DISPLAY_NAME LOCAL_FORWARD [LOCAL_HOSTNAME]
 #   shell   DISPLAY_NAME SSH_TARGET
+#   custom_command DISPLAY_NAME LOCAL_BASH_COMMAND
 #   hosts_management yes|no (default: no; only enables the manual Windows menu)
+#   A in the dashboard manages host-wide Bash aliases in ~/.bashrc, not config entries.
 #
 # Each tunnel belongs to the most recently declared machine.
 # GROUP=yes: all that machine's forwards share an SSH process.
@@ -465,6 +510,20 @@ shell() {
 
     SHELL_NAMES+=("$1")
     SHELL_TARGETS+=("$2")
+    QUICK_NAMES+=("$1")
+    QUICK_KINDS+=(ssh)
+    QUICK_VALUES+=("$2")
+}
+
+custom_command() {
+    if (($# != 2)) || [[ -z "$1" || -z "$2" ]]; then
+        echo 'Usage: custom_command DISPLAY_NAME LOCAL_BASH_COMMAND' >&2
+        CONFIG_ERROR=1
+        return 2
+    fi
+    QUICK_NAMES+=("$1")
+    QUICK_KINDS+=(command)
+    QUICK_VALUES+=("$2")
 }
 
 if [[ ! -r "$CONFIG" ]]; then
@@ -483,10 +542,15 @@ if ((CONFIG_ERROR)); then
     exit 1
 fi
 
-if ((${#TUNNEL_IDS[@]} == 0 && ${#SHELL_NAMES[@]} == 0)); then
-    echo "No tunnels or shell connections configured in $CONFIG" >&2
+if ((${#TUNNEL_IDS[@]} == 0 && ${#QUICK_NAMES[@]} == 0)); then
+    echo "No tunnels, shell connections or custom commands configured in $CONFIG" >&2
     exit 1
 fi
+
+source "$SCRIPT_DIR/aliases-manager.sh" || {
+    echo "Could not load required alias manager: $SCRIPT_DIR/aliases-manager.sh" >&2
+    exit 1
+}
 
 colour() {
     local code=$1 text=$2
@@ -817,11 +881,13 @@ render_message() {
 }
 
 render_global_controls() {
-    local full='  H Hosts    Ctrl+R Restart tunnels    Ctrl+C Stop and exit'
+    local full='  A Aliases    H Hosts    Ctrl+R Restart tunnels    Ctrl+C Stop and exit'
 
     if ((TERM_WIDTH <= ${#full})); then
         if ((TERM_WIDTH < 34)); then
             printf '  '
+            key_hint 'A'
+            printf ' '
             key_hint 'H'
             printf ' '
             key_hint '^R'
@@ -830,6 +896,8 @@ render_global_controls() {
             return
         fi
         printf '  '
+        key_hint 'A'
+        printf ' Aliases  '
         key_hint 'H'
         printf ' Hosts  '
         key_hint '^R'
@@ -840,6 +908,8 @@ render_global_controls() {
     fi
 
     printf '  '
+    key_hint 'A'
+    printf ' Aliases    '
     key_hint 'H'
     printf '  Hosts    '
     key_hint 'Ctrl+R'
@@ -879,12 +949,14 @@ render_dashboard_shell_controls() {
 }
 
 render_dashboard_global_controls() {
-    local full='  S  Saved SSH shells    H  Hosts    Ctrl+R  Restart    Ctrl+C  Stop and exit'
+    local full='  S  Quick launch    A  Aliases    H  Hosts    Ctrl+R  Restart    Ctrl+C  Stop and exit'
 
     if ((TERM_WIDTH <= ${#full})); then
         if ((TERM_WIDTH < 34)); then
             printf '  '
             key_hint 'S'
+            printf ' '
+            key_hint 'A'
             printf ' '
             key_hint 'H'
             printf ' '
@@ -895,7 +967,9 @@ render_dashboard_global_controls() {
         fi
         printf '  '
         key_hint 'S'
-        printf ' Shells  '
+        printf ' Launch  '
+        key_hint 'A'
+        printf ' Aliases  '
         key_hint 'H'
         printf ' Hosts  '
         key_hint '^R'
@@ -907,7 +981,9 @@ render_dashboard_global_controls() {
 
     printf '  '
     key_hint 'S'
-    printf '  Saved SSH shells    '
+    printf '  Quick launch    '
+    key_hint 'A'
+    printf '  Aliases    '
     key_hint 'H'
     printf '  Hosts    '
     key_hint 'Ctrl+R'
@@ -917,7 +993,7 @@ render_dashboard_global_controls() {
 }
 
 render_dashboard_footer() {
-    if ((${#SHELL_NAMES[@]} > 0)); then
+    if ((${#QUICK_NAMES[@]} > 0)); then
         if [[ -n "$MESSAGE" ]]; then
             footer_at "$((TERM_HEIGHT - 2))" render_message
         fi
@@ -1026,7 +1102,7 @@ render_shell_cell() {
     fi
 
     name_width=$((cell_width - 4))
-    name=$(truncate_text "${SHELL_NAMES[$index]}" "$name_width")
+    name=$(truncate_text "${QUICK_NAMES[$index]}" "$name_width")
     printf -v padded_name '%-*s' "$name_width" "$name"
 
     if ((index == SHELL_SELECTION)); then
@@ -1055,13 +1131,13 @@ render_shell_row() {
 }
 
 dashboard_shell_count() {
-    local count=${#SHELL_NAMES[@]}
+    local count=${#QUICK_NAMES[@]}
     ((count > 9)) && count=9
     printf '%s' "$count"
 }
 
 render_dashboard() {
-    local shell_count=${#SHELL_NAMES[@]}
+    local shell_count=${#QUICK_NAMES[@]}
     local top_count tunnel_count label_width host_width
     local grid_lines available_tunnel_rows visible_tunnels hidden_tunnels
     local cell_width index id footer_rows
@@ -1134,7 +1210,7 @@ render_dashboard() {
     if ((shell_count > 0)); then
         body_line :
         body_line :
-        body_line print_clipped_line '  SAVED SSH SHELLS (TOP 9)'
+        body_line print_clipped_line '  QUICK LAUNCH (TOP 9)'
         body_line render_rule
 
         if ((TERM_WIDTH < 36)); then
@@ -1204,7 +1280,7 @@ render_menu_return_hint() {
 }
 
 render_shell_menu() {
-    local count=${#SHELL_NAMES[@]}
+    local count=${#QUICK_NAMES[@]}
     local full='  1–9 Open instantly    ←/→/↑/↓ Navigate    Enter Open    Esc/Q Return'
     local cell_width grid_rows total_lines available selected_line
     local max_scroll line grid_row footer_rows
@@ -1224,7 +1300,7 @@ render_shell_menu() {
 
     body_line render_header_line
     body_line :
-    body_line printf '%s' '  SAVED SSH SHELLS'
+    body_line printf '%s' '  QUICK LAUNCH · SSH SHELLS & LOCAL COMMANDS'
     body_line render_rule
 
     # The full S menu includes connections after #9.
@@ -1281,6 +1357,58 @@ render_shell_menu() {
     fi
 
     render_menu_footer
+    finish_screen
+}
+
+render_alias_menu() {
+    local count=${#ALIAS_NAMES[@]} available index selected max_scroll footer_rows=3
+    ensure_terminal_size
+    ((TERM_WIDTH < 64)) && footer_rows=4
+    begin_screen "$footer_rows"
+    body_line render_header_line
+    body_line :
+    body_line print_clipped_line '  BASH ALIASES · ~/.bashrc (host-wide)'
+    body_line render_rule
+    if [[ -n "$ALIAS_ERROR" ]]; then
+        body_line print_clipped_line "  $ALIAS_ERROR"
+    elif ((count == 0)); then
+        body_line print_clipped_line '  No TunnelWizard-managed aliases. Press A to add one.'
+    else
+        available=$((BODY_LAST_ROW - BODY_ROW + 1))
+        if ((available > 0)); then
+            selected=$ALIAS_SELECTION
+            if ((selected < ALIAS_SCROLL)); then ALIAS_SCROLL=$selected; fi
+            if ((selected >= ALIAS_SCROLL + available)); then
+                ALIAS_SCROLL=$((selected - available + 1))
+            fi
+            max_scroll=$((count - available))
+            ((max_scroll < 0)) && max_scroll=0
+            ((ALIAS_SCROLL > max_scroll)) && ALIAS_SCROLL=$max_scroll
+            for ((index = ALIAS_SCROLL; index < count && index < ALIAS_SCROLL + available; index++)); do
+                if ((index == ALIAS_SELECTION)); then
+                    body_line print_clipped_line "  › ${ALIAS_NAMES[$index]} → ${ALIAS_COMMANDS[$index]}"
+                else
+                    body_line print_clipped_line "    ${ALIAS_NAMES[$index]} → ${ALIAS_COMMANDS[$index]}"
+                fi
+            done
+        fi
+    fi
+    footer_at "$((TERM_HEIGHT - footer_rows + 1))" render_message
+    if ((footer_rows == 4)); then
+        footer_at "$((TERM_HEIGHT - 2))" print_clipped_line '  A Add  E Edit  D Delete'
+        if ((TERM_WIDTH < 30)); then
+            footer_at "$((TERM_HEIGHT - 1))" print_clipped_line '  I Imp W Exp C Clear'
+        elif ((TERM_WIDTH < 39)); then
+            footer_at "$((TERM_HEIGHT - 1))" print_clipped_line '  I Import W Export C Clear'
+        else
+            footer_at "$((TERM_HEIGHT - 1))" print_clipped_line '  I Import  W Export  C Clear All'
+        fi
+    else
+        footer_at "$((TERM_HEIGHT - 1))" print_clipped_line \
+            '  A Add  E Edit  D Delete  I Import  W Export  C Clear All'
+    fi
+    footer_at "$TERM_HEIGHT" print_clipped_line \
+        '  ↑/↓ Select  Esc/Q Return · Bash only'
     finish_screen
 }
 
@@ -1534,6 +1662,7 @@ render_screen() {
 
     case "$UI_MODE" in
         menu) render_shell_menu ;;
+        aliases) render_alias_menu ;;
         hosts) render_hosts_menu ;;
         *) render_dashboard ;;
     esac
@@ -1545,10 +1674,10 @@ render_screen() {
 }
 
 # Move horizontally within the current row, wrapping at its edges.
-# The dashboard passes a count of at most nine; the S menu uses all shells.
+# The dashboard passes a count of at most nine; the S menu uses all quick entries.
 move_shell_horizontal() {
     local direction=$1
-    local count=${2:-${#SHELL_NAMES[@]}}
+    local count=${2:-${#QUICK_NAMES[@]}}
     local row_start row_size column
 
     ((count > 0)) || return 0
@@ -1568,7 +1697,7 @@ move_shell_horizontal() {
 # uses its last available cell if the current column doesn't exist.
 move_shell_vertical() {
     local direction=$1
-    local count=${2:-${#SHELL_NAMES[@]}}
+    local count=${2:-${#QUICK_NAMES[@]}}
     local rows row column destination
 
     ((count > 0)) || return 0
@@ -1925,6 +2054,110 @@ open_shell_window() {
     open_shell_in_current_window "$target" "$name"
 }
 
+open_command_in_current_window() {
+    local value=$1 name=$2 command_status
+    restore_tty_mode
+    printf '\033[?25h\033[H\033[J'
+    printf 'Local command: %s\n\n' "$name"
+    bash -ic "$value" <&3
+    command_status=$?
+    printf '\nCommand ended (exit status %s).\n' "$command_status"
+    read -r -p 'Press Enter to return to the wizard... ' _ <&3 || true
+    if ! set_tty_mode; then
+        EXIT_REQUESTED=1
+        return 1
+    fi
+    printf '\033[?25l'
+    MESSAGE=""
+    FORCE_REPAINT=1
+    REDRAW_NEEDED=1
+}
+
+open_command_window() {
+    local index=$1 name=${QUICK_NAMES[$index]} value=${QUICK_VALUES[$index]}
+    local encoded bash_bin bash_win workdir_win wezterm_bin
+    encoded=$(printf '%s' "$value" | base64 | tr -d '\r\n')
+
+    if running_in_wezterm && command -v wezterm >/dev/null 2>&1; then
+        wezterm_bin=$(command -v wezterm)
+        bash_bin=$(command -v bash)
+        if command -v cygpath >/dev/null 2>&1; then
+            bash_bin=$(cygpath -w "$bash_bin")
+        fi
+        if "$wezterm_bin" cli spawn --new-window --cwd "$HOME" -- \
+            "$bash_bin" "$SCRIPT_PATH" --run-command-base64 "$encoded" \
+            </dev/null >/dev/null 2>&1; then
+            MESSAGE="Opened '$name' in new window."
+            return 0
+        fi
+    fi
+
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            if command -v powershell.exe >/dev/null 2>&1 &&
+               command -v cygpath >/dev/null 2>&1; then
+                bash_bin=$(command -v bash)
+                bash_win=$(cygpath -w "$bash_bin")
+                workdir_win=$(cygpath -w "$SCRIPT_DIR")
+                if WIZARD_BASH_EXE="$bash_win" WIZARD_WORKDIR="$workdir_win" \
+                   WIZARD_COMMAND_B64="$encoded" \
+                   powershell.exe -NoProfile -NonInteractive -Command \
+                   'try { $launchArgs = "-c `"exec bash ./tunnels.sh --run-command-base64 " + $env:WIZARD_COMMAND_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
+                   </dev/null >/dev/null 2>&1; then
+                    MESSAGE="Opened '$name' in new window."
+                    return 0
+                fi
+            fi
+            ;;
+        Darwin)
+            if command -v osascript >/dev/null 2>&1; then
+                if osascript \
+                    -e 'on run argv' \
+                    -e 'tell application "Terminal"' \
+                    -e 'do script ("bash " & quoted form of (item 1 of argv) & " --run-command-base64 " & item 2 of argv)' \
+                    -e 'activate' \
+                    -e 'end tell' \
+                    -e 'end run' \
+                    -- "$SCRIPT_PATH" "$encoded" \
+                    </dev/null >/dev/null 2>&1; then
+                    MESSAGE="Opened '$name' in new window."
+                    return 0
+                fi
+            fi
+            ;;
+        *)
+            if command -v xdg-terminal-exec >/dev/null 2>&1; then
+                xdg-terminal-exec bash "$SCRIPT_PATH" --run-command-base64 "$encoded" \
+                    </dev/null >/dev/null 2>&1 &
+                MESSAGE="Opened '$name' in new window."
+                return 0
+            elif command -v x-terminal-emulator >/dev/null 2>&1; then
+                x-terminal-emulator -e bash "$SCRIPT_PATH" --run-command-base64 "$encoded" \
+                    </dev/null >/dev/null 2>&1 &
+                MESSAGE="Opened '$name' in new window."
+                return 0
+            fi
+            ;;
+    esac
+
+    open_command_in_current_window "$value" "$name"
+}
+
+open_quick_window() {
+    local index=$1
+    if [[ "${QUICK_KINDS[$index]}" == ssh ]]; then
+        # SSH indices are kept separately because saved SSH connections use
+        # the existing SSH-specific launcher and config transport.
+        local shell_index=0 i
+        for ((i = 0; i < index; i++)); do
+            [[ "${QUICK_KINDS[$i]}" == ssh ]] && shell_index=$((shell_index + 1))
+        done
+        open_shell_window "$shell_index"
+    else
+        open_command_window "$index"
+    fi
+}
+
 read_key() {
     local first="" next="" timeout=${1:-0.1}
     local i
@@ -2107,6 +2340,173 @@ manage_hosts() {
     REDRAW_NEEDED=1
 }
 
+alias_prompt_action() {
+    local action=$1 name value answer="" old_index=-1
+    if [[ "$action" == add ]]; then
+        printf 'Add a host-wide Bash alias in ~/.bashrc (not the current config)\n\n'
+        if ! read -r -p 'Alias name: ' name <&3 ||
+           ! read -r -p 'Command: ' value <&3; then
+            MESSAGE='Alias edit cancelled; ~/.bashrc unchanged.'
+            return
+        fi
+    else
+        old_index=$ALIAS_SELECTION
+        name=${ALIAS_NAMES[$old_index]}
+        value=${ALIAS_COMMANDS[$old_index]}
+        if [[ "$action" == edit ]]; then
+            printf 'Edit host-wide Bash alias %s (blank keeps current value)\n\n' "$name"
+            local new_name new_value
+            if ! read -r -p "Name [$name]: " new_name <&3 ||
+               ! read -r -p "Command [$value]: " new_value <&3; then
+                MESSAGE='Alias edit cancelled; ~/.bashrc unchanged.'
+                return
+            fi
+            [[ -n "$new_name" ]] && name=$new_name
+            [[ -n "$new_value" ]] && value=$new_value
+        else
+            printf 'Delete Bash alias %s → %s?\n\n' "$name" "$value"
+            read -r -p 'Confirm delete? [y/N] ' answer <&3 || true
+            if [[ "$answer" != y && "$answer" != Y ]]; then
+                MESSAGE='Alias deletion cancelled; ~/.bashrc unchanged.'
+                return
+            fi
+        fi
+    fi
+    if [[ "$action" == delete ]]; then
+        if alias_delete_entry "$old_index"; then
+            MESSAGE="Deleted Bash alias '$name' from ~/.bashrc; start a new shell to use changes."
+        else
+            MESSAGE=$ALIAS_ERROR
+        fi
+    elif alias_save_entry "$old_index" "$name" "$value"; then
+        MESSAGE="Saved Bash alias '$name' in ~/.bashrc; start a new shell to use changes."
+    else
+        MESSAGE=$ALIAS_ERROR
+    fi
+    local result=$MESSAGE
+    if ! alias_profile_read; then result=$ALIAS_ERROR; fi
+    MESSAGE=$result
+    if ((ALIAS_SELECTION >= ${#ALIAS_NAMES[@]})); then
+        ALIAS_SELECTION=$(( ${#ALIAS_NAMES[@]} - 1 ))
+    fi
+    ((ALIAS_SELECTION < 0)) && ALIAS_SELECTION=0
+}
+
+alias_import_report() {
+    local name shown=0 page_size=$((TERM_HEIGHT - 6))
+    ((page_size > 0)) || page_size=1
+    printf 'Imported %s alias(es) into ~/.bashrc.\n' "$ALIAS_IMPORTED_COUNT"
+    if ((${#ALIAS_SKIPPED_NAMES[@]})); then
+        printf 'Skipped duplicate aliases (existing or repeated in the file):\n'
+        for name in "${ALIAS_SKIPPED_NAMES[@]}"; do
+            if ((shown >= page_size)); then
+                read -r -p 'Press Enter for more skipped names... ' _ <&3 || true
+                printf '\033[H\033[JSkipped duplicate aliases (continued):\n'
+                shown=0
+            fi
+            printf '  %s\n' "$name"
+            shown=$((shown + 1))
+        done
+    fi
+    read -r -p 'Press Enter to return... ' _ <&3 || true
+}
+
+alias_file_action() {
+    local action=$1 answer='' expected='' result
+    case "$action" in
+        import)
+            if alias_import_file; then
+                result="Imported $ALIAS_IMPORTED_COUNT Bash alias(es); ${#ALIAS_SKIPPED_NAMES[@]} duplicate name(s) skipped."
+                alias_import_report
+                MESSAGE=$result
+            else
+                MESSAGE=$ALIAS_ERROR
+                printf '%s\n' "$MESSAGE"
+                read -r -p 'Press Enter to return... ' _ <&3 || true
+            fi
+            ;;
+        export)
+            if [[ -L "$ALIAS_CONFIG_FILE" ||
+                  ( -e "$ALIAS_CONFIG_FILE" &&
+                    ( ! -f "$ALIAS_CONFIG_FILE" || ! -r "$ALIAS_CONFIG_FILE" ) ) ]]; then
+                MESSAGE='Export target must be a readable regular file (no symlinks).'
+            else
+                if [[ -e "$ALIAS_CONFIG_FILE" ]]; then
+                    if ! expected=$(cksum < "$ALIAS_CONFIG_FILE" 2>/dev/null); then
+                        MESSAGE='Cannot read ./bash-aliases.conf; nothing exported.'
+                        return
+                    fi
+                    read -r -p 'Overwrite existing ./bash-aliases.conf with managed aliases? [y/N] ' answer <&3 || true
+                    if [[ "$answer" != y && "$answer" != Y ]]; then
+                        MESSAGE='Export cancelled; ./bash-aliases.conf unchanged.'
+                        return
+                    fi
+                fi
+                if alias_export_file "$expected"; then
+                    MESSAGE='Exported managed Bash aliases to ./bash-aliases.conf.'
+                else
+                    MESSAGE=$ALIAS_ERROR
+                fi
+            fi
+            printf '%s\n' "$MESSAGE"
+            read -r -p 'Press Enter to return... ' _ <&3 || true
+            ;;
+        clear)
+            if ((${#ALIAS_NAMES[@]} == 0)); then
+                MESSAGE='No managed Bash aliases to clear; ~/.bashrc unchanged.'
+                return
+            fi
+            printf 'Clear all %s TunnelWizard-managed Bash aliases from ~/.bashrc?\n' "${#ALIAS_NAMES[@]}"
+            read -r -p 'Confirm CLEAR ALL managed aliases? [y/N] ' answer <&3 || true
+            if [[ "$answer" != y && "$answer" != Y ]]; then
+                MESSAGE='Clear All cancelled; ~/.bashrc unchanged.'
+            elif alias_clear_all; then
+                MESSAGE='Cleared all managed Bash aliases; other ~/.bashrc content preserved.'
+            else
+                MESSAGE=$ALIAS_ERROR
+            fi
+            ;;
+    esac
+    result=$MESSAGE
+    if ! alias_profile_read; then result=$ALIAS_ERROR; fi
+    MESSAGE=$result
+    if ((ALIAS_SELECTION >= ${#ALIAS_NAMES[@]})); then
+        ALIAS_SELECTION=$(( ${#ALIAS_NAMES[@]} - 1 ))
+    fi
+    ((ALIAS_SELECTION < 0)) && ALIAS_SELECTION=0
+}
+
+manage_alias() {
+    local action=$1
+    if ! alias_profile_read; then
+        MESSAGE=$ALIAS_ERROR
+        REDRAW_NEEDED=1
+        return 1
+    fi
+    if [[ "$action" == edit || "$action" == delete ]] && ((${#ALIAS_NAMES[@]} == 0)); then
+        MESSAGE='No managed aliases to edit; press A to add one.'
+        REDRAW_NEEDED=1
+        return 1
+    fi
+    if ((ALIAS_SELECTION >= ${#ALIAS_NAMES[@]} && ${#ALIAS_NAMES[@]} > 0)); then
+        ALIAS_SELECTION=$(( ${#ALIAS_NAMES[@]} - 1 ))
+    fi
+    restore_tty_mode
+    printf '\033[?25h\033[H\033[J'
+    if [[ "$action" == add || "$action" == edit || "$action" == delete ]]; then
+        alias_prompt_action "$action"
+    else
+        alias_file_action "$action"
+    fi
+    if ! set_tty_mode; then
+        EXIT_REQUESTED=1
+        return 1
+    fi
+    printf '\033[?25l'
+    FORCE_REPAINT=1
+    REDRAW_NEEDED=1
+}
+
 request_restart() {
     stop_tunnels
 
@@ -2204,7 +2604,33 @@ while true; do
         request_restart
     fi
 
-    if [[ "$UI_MODE" == hosts ]]; then
+    if [[ "$UI_MODE" == aliases ]]; then
+        case "$KEY" in
+            a|A) manage_alias add || true ;;
+            e|E) manage_alias edit || true ;;
+            d|D) manage_alias delete || true ;;
+            i|I) manage_alias import || true ;;
+            w|W) manage_alias export || true ;;
+            c|C) manage_alias clear || true ;;
+            UP)
+                if ((${#ALIAS_NAMES[@]} > 0)); then
+                    ALIAS_SELECTION=$(( (ALIAS_SELECTION + ${#ALIAS_NAMES[@]} - 1) % ${#ALIAS_NAMES[@]} ))
+                    REDRAW_NEEDED=1
+                fi
+                ;;
+            DOWN)
+                if ((${#ALIAS_NAMES[@]} > 0)); then
+                    ALIAS_SELECTION=$(( (ALIAS_SELECTION + 1) % ${#ALIAS_NAMES[@]} ))
+                    REDRAW_NEEDED=1
+                fi
+                ;;
+            ESC|q|Q)
+                UI_MODE=dashboard
+                MESSAGE=""
+                REDRAW_NEEDED=1
+                ;;
+        esac
+    elif [[ "$UI_MODE" == hosts ]]; then
         case "$KEY" in
             a|A|d|D|REMOVE_ALL_HOSTS)
                 if ! is_windows_shell; then
@@ -2226,6 +2652,13 @@ while true; do
         esac
     elif [[ "$UI_MODE" == dashboard ]]; then
         case "$KEY" in
+            a|A)
+                UI_MODE=aliases
+                ALIAS_SELECTION=0
+                ALIAS_SCROLL=0
+                if alias_profile_read; then MESSAGE=""; else MESSAGE=$ALIAS_ERROR; fi
+                REDRAW_NEEDED=1
+                ;;
             h|H)
                 if [[ "$HOSTS_MANAGEMENT" != yes ]]; then
                     MESSAGE='Hosts UI disabled. Add hosts_management yes to this config to opt in.'
@@ -2244,7 +2677,7 @@ while true; do
                 REDRAW_NEEDED=1
                 ;;
             s|S)
-                if ((${#SHELL_NAMES[@]} > 0)); then
+                if ((${#QUICK_NAMES[@]} > 0)); then
                     UI_MODE="menu"
                     SHELL_SELECTION=0
                     MENU_SCROLL=0
@@ -2265,16 +2698,16 @@ while true; do
                 move_shell_horizontal 1 "$(dashboard_shell_count)"
                 ;;
             ENTER)
-                if ((${#SHELL_NAMES[@]} > 0)); then
-                    open_shell_window "$SHELL_SELECTION" || true
+                if ((${#QUICK_NAMES[@]} > 0)); then
+                    open_quick_window "$SHELL_SELECTION" || true
                     REDRAW_NEEDED=1
                 fi
                 ;;
             [1-9])
                 index=$((KEY - 1))
-                if ((index < ${#SHELL_NAMES[@]})); then
+                if ((index < ${#QUICK_NAMES[@]})); then
                     SHELL_SELECTION=$index
-                    open_shell_window "$index" || true
+                    open_quick_window "$index" || true
                     REDRAW_NEEDED=1
                 fi
                 ;;
@@ -2294,14 +2727,14 @@ while true; do
                 move_shell_horizontal 1
                 ;;
             ENTER)
-                open_shell_window "$SHELL_SELECTION" || true
+                open_quick_window "$SHELL_SELECTION" || true
                 REDRAW_NEEDED=1
                 ;;
             [1-9])
                 index=$((KEY - 1))
-                if ((index < ${#SHELL_NAMES[@]})); then
+                if ((index < ${#QUICK_NAMES[@]})); then
                     SHELL_SELECTION=$index
-                    open_shell_window "$index" || true
+                    open_quick_window "$index" || true
                     REDRAW_NEEDED=1
                 fi
                 ;;
