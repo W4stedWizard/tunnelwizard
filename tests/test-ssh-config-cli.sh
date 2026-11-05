@@ -56,6 +56,18 @@ parse_cli_args --connect-base64 dGVzdA== --ssh-config-b64 -
 [[ $CONNECT_MODE -eq 1 && "$SSH_CONFIG_FILE" == "$root/ssh_config" &&
    $SSH_CONFIG_EXPLICIT -eq 0 ]] || fail 'default saved-shell config transport failed'
 
+encoded_host=$(printf '%s' 'host.example.invalid' | base64 | tr -d '\r\n')
+encoded_user=$(printf '%s' 'tunnel-user' | base64 | tr -d '\r\n')
+encoded_identity=$(printf '%s' "$tmp/key with spaces" | base64 | tr -d '\r\n')
+encoded_label=$(printf '%s' 'Database tunnel' | base64 | tr -d '\r\n')
+parse_cli_args --verify-host-key-base64 "$encoded_host" "$encoded_user" \
+    "$encoded_identity" "$encoded_label" --ssh-config-b64 "$encoded"
+[[ $VERIFY_HOST_KEY_MODE -eq 1 && "$VERIFY_TARGET_B64" == "$encoded_host" &&
+   "$VERIFY_USER_B64" == "$encoded_user" && "$VERIFY_IDENTITY_B64" == "$encoded_identity" &&
+   "$VERIFY_LABEL_B64" == "$encoded_label" && "$SSH_CONFIG_FILE" == "$custom" ]] ||
+    fail 'host-key verification mode did not preserve encoded connection details'
+validate_ssh_config || fail 'host-key verification SSH config should validate'
+
 if parse_cli_args --connect-base64 dGVzdA== --connect-base64 dGVzdA== 2>/dev/null; then
     fail 'duplicate internal connection targets were accepted'
 fi
@@ -64,6 +76,14 @@ if parse_cli_args --connect-base64 dGVzdA== "$root/tunnels.conf" 2>/dev/null; th
 fi
 if parse_cli_args --ssh-config-b64 "$encoded" 2>/dev/null; then
     fail 'internal SSH config transport was accepted outside connection mode'
+fi
+if parse_cli_args --verify-host-key-base64 "$encoded_host" "$encoded_user" \
+    "$encoded_identity" "$encoded_label" "$root/tunnels.conf" 2>/dev/null; then
+    fail 'host-key verification mode accepted a TunnelWizard config path'
+fi
+if parse_cli_args --connect-base64 dGVzdA== --verify-host-key-base64 \
+    "$encoded_host" "$encoded_user" "$encoded_identity" "$encoded_label" 2>/dev/null; then
+    fail 'saved-shell and host-key verification modes were both accepted'
 fi
 
 parse_cli_args -- "$tmp/-tunnels.conf"

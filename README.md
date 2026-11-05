@@ -141,6 +141,16 @@ leaving TunnelWizard open. Active tunnel statuses change to `STOPPED`; press
 `Ctrl+R` to restart them. The `RUNNING` status is highlighted in purple.
 `Ctrl+C` still stops the tunnels and exits the wizard.
 
+When SSH reports a first-use host-key verification failure, TunnelWizard opens
+an interactive SSH session in a separate terminal when a supported launcher is
+available. The window shows a purple explanation and uses the same SSH host,
+user, identity, and SSH config as the tunnel. Review the displayed fingerprint
+and accept it only if you have verified it through a trusted source. Once the
+session opens, exit it, return to TunnelWizard, and choose **Retry**. TunnelWizard
+does not accept keys or weaken SSH's configured host-key policy. A changed host
+key is treated as a security warning and does not trigger the verification
+session. If a separate terminal cannot be opened, connect manually using SSH.
+
 ### Local hostnames and Windows hosts file
 
 Currently this feature is only usable on windows.
@@ -189,7 +199,8 @@ at `https://pmx-one` and `https://pmx-two`.
 Your browser may warn that a Proxmox certificate does
 not match the local alias; configure a trusted matching certificate if needed.
 
-Focused checks are available with `bash tests/test-hostnames.sh`,
+Focused checks are available with `bash tests/test-host-key.sh`,
+`bash tests/test-hostnames.sh`,
 `bash tests/test-ssh-config-cli.sh`, `bash tests/test-render-capture.sh`,
 `bash tests/test-quick-launch.sh` and `bash tests/test-aliases.sh`; on Windows, run
 `powershell.exe -NoProfile -File tests/test-hosts-plan.ps1` for in-memory

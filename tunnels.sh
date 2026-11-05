@@ -11,6 +11,11 @@ SSH_CONFIG_EXPLICIT=0
 SSH_CONFIG_B64_USED=0
 CONNECT_MODE=0
 CONNECT_TARGET_B64=""
+VERIFY_HOST_KEY_MODE=0
+VERIFY_TARGET_B64=""
+VERIFY_USER_B64=""
+VERIFY_IDENTITY_B64=""
+VERIFY_LABEL_B64=""
 COMMAND_MODE=0
 COMMAND_B64=""
 
@@ -53,6 +58,11 @@ parse_cli_args() {
     SSH_CONFIG_B64_USED=0
     CONNECT_MODE=0
     CONNECT_TARGET_B64=""
+    VERIFY_HOST_KEY_MODE=0
+    VERIFY_TARGET_B64=""
+    VERIFY_USER_B64=""
+    VERIFY_IDENTITY_B64=""
+    VERIFY_LABEL_B64=""
     COMMAND_MODE=0
     COMMAND_B64=""
 
@@ -78,7 +88,7 @@ parse_cli_args() {
                 shift
                 ;;
             --connect-base64)
-                if ((CONNECT_MODE || COMMAND_MODE)) || (($# < 2)) ||
+                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE)) || (($# < 2)) ||
                    [[ ! "$2" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
                     echo 'Invalid encoded SSH target.' >&2
                     return 2
@@ -87,8 +97,24 @@ parse_cli_args() {
                 CONNECT_TARGET_B64=$2
                 shift 2
                 ;;
+            --verify-host-key-base64)
+                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE)) || (($# < 5)) ||
+                   [[ ! "$2" =~ ^[A-Za-z0-9+/]+={0,2}$ ||
+                      ! "$3" =~ ^[A-Za-z0-9+/]+={0,2}$ ||
+                      ! "$4" =~ ^[A-Za-z0-9+/]+={0,2}$ ||
+                      ! "$5" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+                    echo 'Invalid encoded host-key verification arguments.' >&2
+                    return 2
+                fi
+                VERIFY_HOST_KEY_MODE=1
+                VERIFY_TARGET_B64=$2
+                VERIFY_USER_B64=$3
+                VERIFY_IDENTITY_B64=$4
+                VERIFY_LABEL_B64=$5
+                shift 5
+                ;;
             --run-command-base64)
-                if ((CONNECT_MODE || COMMAND_MODE)) || (($# < 2)) ||
+                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE)) || (($# < 2)) ||
                    [[ ! "$2" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
                     echo 'Invalid encoded local command.' >&2
                     return 2
@@ -121,7 +147,7 @@ parse_cli_args() {
                 ;;
             --)
                 shift
-                if ((CONNECT_MODE || COMMAND_MODE)) || ((config_seen)) || (($# > 1)); then
+                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE)) || ((config_seen)) || (($# > 1)); then
                     echo 'Usage: tunnels.sh [TUNNELS_CONFIG] [--ssh-config|-cssh SSH_CONFIG]' >&2
                     return 2
                 fi
@@ -135,7 +161,7 @@ parse_cli_args() {
                 return 2
                 ;;
             *)
-                if ((CONNECT_MODE || COMMAND_MODE)) || ((config_seen)); then
+                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE)) || ((config_seen)); then
                     echo 'Only one TunnelWizard config path may be supplied.' >&2
                     return 2
                 fi
@@ -146,12 +172,16 @@ parse_cli_args() {
         esac
     done
 
-    if ((SSH_CONFIG_B64_USED && !CONNECT_MODE)); then
-        echo 'Internal SSH config option requires --connect-base64.' >&2
+    if ((SSH_CONFIG_B64_USED && !CONNECT_MODE && !VERIFY_HOST_KEY_MODE)); then
+        echo 'Internal SSH config option requires an internal SSH mode.' >&2
         return 2
     fi
     if ((CONNECT_MODE && config_seen)); then
         echo 'Internal SSH connection mode does not accept a TunnelWizard config path.' >&2
+        return 2
+    fi
+    if ((VERIFY_HOST_KEY_MODE && config_seen)); then
+        echo 'Internal host-key verification mode does not accept a TunnelWizard config path.' >&2
         return 2
     fi
     if ((COMMAND_MODE && (config_seen || ssh_config_seen))); then
@@ -208,6 +238,47 @@ if ((CONNECT_MODE)); then
         exec ssh -F "$SSH_CONFIG_FILE" "$target"
     fi
     exec ssh "$target"
+fi
+
+# A failed tunnel with a first-use host-key check opens this interactive mode.
+# It keeps the existing SSH host-key policy and only disables BatchMode so
+# OpenSSH can ask the user its normal questions.
+if ((VERIFY_HOST_KEY_MODE)); then
+    verify_host=$(decode_base64 "$VERIFY_TARGET_B64") || exit 2
+    verify_user=$(decode_base64 "$VERIFY_USER_B64") || exit 2
+    verify_identity=$(decode_base64 "$VERIFY_IDENTITY_B64") || exit 2
+    verify_label=$(decode_base64 "$VERIFY_LABEL_B64") || exit 2
+    verify_input=/dev/stdin
+
+    if [[ -z "$verify_host" || "$verify_host" == -* || -z "$verify_user" ||
+          -z "$verify_identity" || -z "$verify_label" ]]; then
+        echo 'Invalid host-key verification target or identity.' >&2
+        exit 2
+    fi
+
+    printf '\n\033[1;38;2;249;239;255;48;2;78;45;112m  TunnelWizard · HOST KEY VERIFICATION  \033[0m\n'
+    printf '\033[1;38;2;224;188;255m  Tunnel: %s · SSH host: %s\033[0m\n\n' \
+        "$verify_label" "$verify_host"
+    printf '\033[38;2;221;205;239mOpenSSH is connecting interactively so you can review the server fingerprint.\033[0m\n'
+    printf '\033[38;2;221;205;239mOnly accept it if you have verified it through a trusted source.\033[0m\n'
+    printf 'Your configured SSH host-key policy remains in effect. After this session,\n'
+    printf 'return to TunnelWizard and choose Retry to start the tunnel.\n\n'
+
+    # Terminal launchers may start their own process with stdin disconnected.
+    # Use the controlling terminal for SSH's yes/no prompt and the close prompt.
+    if { : </dev/tty; } 2>/dev/null; then
+        verify_input=/dev/tty
+    fi
+
+    verify_ssh_args=(-o BatchMode=no -i "$verify_identity" -l "$verify_user")
+    if [[ -f "$SSH_CONFIG_FILE" ]]; then
+        verify_ssh_args=(-F "$SSH_CONFIG_FILE" "${verify_ssh_args[@]}")
+    fi
+    ssh "${verify_ssh_args[@]}" "$verify_host" < "$verify_input"
+    verify_status=$?
+    printf '\nInteractive SSH session ended (exit status %s).\n' "$verify_status"
+    read -r -p 'Press Enter to close this window... ' _ < "$verify_input" || true
+    exit "$verify_status"
 fi
 
 CONNECT_TIMEOUT=10
@@ -1858,9 +1929,26 @@ start_one() {
     PID_TO_TUNNEL["$pid"]=$id
 }
 
+classify_host_key_failure() {
+    local log_file=$1
+
+    [[ -r "$log_file" ]] || { printf 'none'; return; }
+
+    # A changed key is a security warning, not a first-use prompt opportunity.
+    if grep -Eiq 'REMOTE HOST IDENTIFICATION HAS CHANGED|Offending .* key|host key .* has changed' \
+        "$log_file"; then
+        printf 'changed'
+    elif grep -Eiq "The authenticity of host .* can't be established|No .* host key is known for|Host key verification failed" \
+        "$log_file"; then
+        printf 'verify'
+    else
+        printf 'none'
+    fi
+}
+
 start_with_retry() {
     local id=$1
-    local pid=${2:-} index answer error_line
+    local pid=${2:-} index answer error_line host_key_failure
 
     while true; do
         ((EXIT_REQUESTED)) && return
@@ -1905,6 +1993,25 @@ start_with_retry() {
                 tr -cd '\11\40-\176')
             printf '  SSH: %s\n' "$error_line"
         fi
+
+        host_key_failure=$(classify_host_key_failure "$LOG_DIR/$id.log")
+        case "$host_key_failure" in
+            changed)
+                printf '  '
+                colour '1;38;2;255;190;190' \
+                    'WARNING: the server host key changed. No verification window was opened.'
+                printf '\n  Verify the change with the server administrator before reconnecting.\n'
+                ;;
+            verify)
+                printf '  '
+                colour '1;38;2;224;188;255' \
+                    'SSH host-key verification is needed; opening an interactive SSH window.'
+                printf '\n'
+                if ! open_host_key_verification_window "$id"; then
+                    printf '  Could not open another terminal. Connect manually with SSH to verify the host key.\n'
+                fi
+                ;;
+        esac
 
         printf '  Check VPN/network settings, authentication, and the local port.\n\n'
 
@@ -2082,6 +2189,130 @@ open_shell_window() {
 
     # Last resort: connect without opening another terminal.
     open_shell_in_current_window "$target" "$name"
+}
+
+open_host_key_verification_window() {
+    local id=$1 host=${SSH_HOST[$1]} user=${SSH_USER[$1]}
+    local identity=${IDENTITY[$1]} name=${LABEL[$1]}
+    local encoded_host encoded_user encoded_identity encoded_name encoded_verify_shell encoded_verify_config
+    local encoded_ssh_config=- bash_bin bash_win workdir_win verify_shell_code
+
+    encoded_host=$(printf '%s' "$host" | base64 | tr -d '\r\n')
+    encoded_user=$(printf '%s' "$user" | base64 | tr -d '\r\n')
+    encoded_identity=$(printf '%s' "$identity" | base64 | tr -d '\r\n')
+    encoded_name=$(printf '%s' "$name" | base64 | tr -d '\r\n')
+    encoded_verify_config=$(printf '%s' "$SSH_CONFIG_FILE" | base64 | tr -d '\r\n')
+    if ((SSH_CONFIG_EXPLICIT)); then
+        encoded_ssh_config=$(printf '%s' "$SSH_CONFIG_FILE" | base64 | tr -d '\r\n')
+    fi
+
+    if running_in_wezterm && command -v wezterm >/dev/null 2>&1; then
+        bash_bin=$(command -v bash)
+        if command -v cygpath >/dev/null 2>&1; then
+            bash_bin=$(cygpath -w "$bash_bin")
+        fi
+
+        # WezTerm is a native Windows process when called from Git Bash.
+        # Send only base64 arguments across that boundary so MSYS path
+        # conversion and Windows command-line quoting cannot split paths or
+        # turn pieces of the script into separate commands.
+        verify_shell_code=$(cat <<'VERIFY_SHELL'
+decode_verify_arg() {
+    if [[ "$(uname -s)" == Darwin ]]; then
+        printf '%s' "$1" | base64 -D
+    else
+        printf '%s' "$1" | base64 -d
+    fi
+}
+verify_name=$(decode_verify_arg "$1") || exit 2
+verify_host=$(decode_verify_arg "$2") || exit 2
+verify_user=$(decode_verify_arg "$3") || exit 2
+verify_identity=$(decode_verify_arg "$4") || exit 2
+verify_config=$(decode_verify_arg "$5") || exit 2
+printf '\n\033[1;38;2;249;239;255;48;2;78;45;112m  TunnelWizard · HOST KEY VERIFICATION  \033[0m\n'
+printf '\033[1;38;2;224;188;255m  Tunnel: %s · SSH host: %s\033[0m\n\n' "$verify_name" "$verify_host"
+printf '\033[38;2;221;205;239mOpenSSH is connecting interactively so you can review the server fingerprint.\033[0m\n'
+printf '\033[38;2;221;205;239mOnly accept it if you have verified it through a trusted source.\033[0m\n'
+printf 'Your configured SSH host-key policy remains in effect. After this session,\n'
+printf 'return to TunnelWizard and choose Retry to start the tunnel.\n\n'
+verify_input=/dev/stdin
+if { : </dev/tty; } 2>/dev/null; then verify_input=/dev/tty; fi
+verify_ssh_args=(-o BatchMode=no -i "$verify_identity" -l "$verify_user")
+if [[ -f "$verify_config" ]]; then verify_ssh_args=(-F "$verify_config" "${verify_ssh_args[@]}"); fi
+ssh "${verify_ssh_args[@]}" "$verify_host" < "$verify_input"
+verify_status=$?
+printf '\nInteractive SSH session ended (exit status %s).\n' "$verify_status"
+read -r -p 'Press Enter to close this window... ' _ < "$verify_input" || true
+exit "$verify_status"
+VERIFY_SHELL
+)
+        encoded_verify_shell=$(printf '%s' "$verify_shell_code" | base64 | tr -d '\r\n')
+        if wezterm cli spawn --new-window --cwd "$HOME" -- \
+            "$bash_bin" -c \
+            'printf "%s" "$1" | base64 -d | bash -s -- "$2" "$3" "$4" "$5" "$6"' \
+            wizard-verify "$encoded_verify_shell" "$encoded_name" "$encoded_host" \
+            "$encoded_user" "$encoded_identity" "$encoded_verify_config" \
+            </dev/null >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            if command -v powershell.exe >/dev/null 2>&1 &&
+               command -v cygpath >/dev/null 2>&1; then
+                bash_bin=$(command -v bash)
+                bash_win=$(cygpath -w "$bash_bin")
+                workdir_win=$(cygpath -w "$SCRIPT_DIR")
+
+                if WIZARD_BASH_EXE="$bash_win" \
+                   WIZARD_WORKDIR="$workdir_win" \
+                   WIZARD_TARGET_B64="$encoded_host" \
+                   WIZARD_USER_B64="$encoded_user" \
+                   WIZARD_IDENTITY_B64="$encoded_identity" \
+                   WIZARD_LABEL_B64="$encoded_name" \
+                   WIZARD_SSH_CONFIG_B64="$encoded_ssh_config" \
+                   powershell.exe -NoProfile -NonInteractive -Command \
+                   'try { $launchArgs = "-c `"bash ./tunnels.sh --verify-host-key-base64 " + $env:WIZARD_TARGET_B64 + " " + $env:WIZARD_USER_B64 + " " + $env:WIZARD_IDENTITY_B64 + " " + $env:WIZARD_LABEL_B64 + " --ssh-config-b64 " + $env:WIZARD_SSH_CONFIG_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
+                   </dev/null >/dev/null 2>&1; then
+                    return 0
+                fi
+            fi
+            ;;
+        Darwin)
+            if command -v osascript >/dev/null 2>&1; then
+                if osascript \
+                    -e 'on run argv' \
+                    -e 'tell application "Terminal"' \
+                    -e 'do script ("bash " & quoted form of (item 1 of argv) & " --verify-host-key-base64 " & item 2 of argv & " " & item 3 of argv & " " & item 4 of argv & " " & item 5 of argv & " --ssh-config-b64 " & item 6 of argv)' \
+                    -e 'activate' \
+                    -e 'end tell' \
+                    -e 'end run' \
+                    -- "$SCRIPT_PATH" "$encoded_host" "$encoded_user" \
+                    "$encoded_identity" "$encoded_name" "$encoded_ssh_config" \
+                    </dev/null >/dev/null 2>&1; then
+                    return 0
+                fi
+            fi
+            ;;
+        *)
+            if command -v xdg-terminal-exec >/dev/null 2>&1; then
+                xdg-terminal-exec bash "$SCRIPT_PATH" --verify-host-key-base64 \
+                    "$encoded_host" "$encoded_user" "$encoded_identity" "$encoded_name" \
+                    --ssh-config-b64 "$encoded_ssh_config" \
+                    </dev/null >/dev/null 2>&1 &
+                return 0
+            elif command -v x-terminal-emulator >/dev/null 2>&1; then
+                x-terminal-emulator -e bash "$SCRIPT_PATH" --verify-host-key-base64 \
+                    "$encoded_host" "$encoded_user" "$encoded_identity" "$encoded_name" \
+                    --ssh-config-b64 "$encoded_ssh_config" \
+                    </dev/null >/dev/null 2>&1 &
+                return 0
+            fi
+            ;;
+    esac
+
+    return 1
 }
 
 open_command_in_current_window() {
