@@ -2194,8 +2194,8 @@ open_shell_window() {
 open_host_key_verification_window() {
     local id=$1 host=${SSH_HOST[$1]} user=${SSH_USER[$1]}
     local identity=${IDENTITY[$1]} name=${LABEL[$1]}
-    local encoded_host encoded_user encoded_identity encoded_name encoded_verify_shell encoded_verify_config
-    local encoded_ssh_config=- bash_bin bash_win workdir_win verify_shell_code
+    local encoded_host encoded_user encoded_identity encoded_name encoded_verify_config
+    local encoded_ssh_config=- bash_bin bash_win workdir_win
 
     encoded_host=$(printf '%s' "$host" | base64 | tr -d '\r\n')
     encoded_user=$(printf '%s' "$user" | base64 | tr -d '\r\n')
@@ -2212,46 +2212,15 @@ open_host_key_verification_window() {
             bash_bin=$(cygpath -w "$bash_bin")
         fi
 
-        # WezTerm is a native Windows process when called from Git Bash.
-        # Send only base64 arguments across that boundary so MSYS path
-        # conversion and Windows command-line quoting cannot split paths or
-        # turn pieces of the script into separate commands.
-        verify_shell_code=$(cat <<'VERIFY_SHELL'
-decode_verify_arg() {
-    if [[ "$(uname -s)" == Darwin ]]; then
-        printf '%s' "$1" | base64 -D
-    else
-        printf '%s' "$1" | base64 -d
-    fi
-}
-verify_name=$(decode_verify_arg "$1") || exit 2
-verify_host=$(decode_verify_arg "$2") || exit 2
-verify_user=$(decode_verify_arg "$3") || exit 2
-verify_identity=$(decode_verify_arg "$4") || exit 2
-verify_config=$(decode_verify_arg "$5") || exit 2
-printf '\n\033[1;38;2;249;239;255;48;2;78;45;112m  TunnelWizard · HOST KEY VERIFICATION  \033[0m\n'
-printf '\033[1;38;2;224;188;255m  Tunnel: %s · SSH host: %s\033[0m\n\n' "$verify_name" "$verify_host"
-printf '\033[38;2;221;205;239mOpenSSH is connecting interactively so you can review the server fingerprint.\033[0m\n'
-printf '\033[38;2;221;205;239mOnly accept it if you have verified it through a trusted source.\033[0m\n'
-printf 'Your configured SSH host-key policy remains in effect. After this session,\n'
-printf 'return to TunnelWizard and choose Retry to start the tunnel.\n\n'
-verify_input=/dev/stdin
-if { : </dev/tty; } 2>/dev/null; then verify_input=/dev/tty; fi
-verify_ssh_args=(-o BatchMode=no -i "$verify_identity" -l "$verify_user")
-if [[ -f "$verify_config" ]]; then verify_ssh_args=(-F "$verify_config" "${verify_ssh_args[@]}"); fi
-ssh "${verify_ssh_args[@]}" "$verify_host" < "$verify_input"
-verify_status=$?
-printf '\nInteractive SSH session ended (exit status %s).\n' "$verify_status"
-read -r -p 'Press Enter to close this window... ' _ < "$verify_input" || true
-exit "$verify_status"
-VERIFY_SHELL
-)
-        encoded_verify_shell=$(printf '%s' "$verify_shell_code" | base64 | tr -d '\r\n')
+        # WezTerm is a native Windows process when called from Git Bash. Keep
+        # the -c payload to one line (as in the normal SSH-window launcher)
+        # and send all variable data as base64 arguments to avoid MSYS path
+        # conversion and Windows command-line quoting errors.
         if wezterm cli spawn --new-window --cwd "$HOME" -- \
             "$bash_bin" -c \
-            'printf "%s" "$1" | base64 -d | bash -s -- "$2" "$3" "$4" "$5" "$6"' \
-            wizard-verify "$encoded_verify_shell" "$encoded_name" "$encoded_host" \
-            "$encoded_user" "$encoded_identity" "$encoded_verify_config" \
+            'decode_verify_arg(){ if [[ "$(uname -s)" == Darwin ]]; then printf "%s" "$1" | base64 -D; else printf "%s" "$1" | base64 -d; fi; }; verify_name=$(decode_verify_arg "$1") || exit 2; verify_host=$(decode_verify_arg "$2") || exit 2; verify_user=$(decode_verify_arg "$3") || exit 2; verify_identity=$(decode_verify_arg "$4") || exit 2; verify_config=$(decode_verify_arg "$5") || exit 2; printf "\\n\\033[1;38;2;249;239;255;48;2;78;45;112m  TunnelWizard · HOST KEY VERIFICATION  \\033[0m\\n"; printf "\\033[1;38;2;224;188;255m  Tunnel: %s · SSH host: %s\\033[0m\\n\\n" "$verify_name" "$verify_host"; printf "\\033[38;2;221;205;239mOpenSSH is connecting interactively so you can review the server fingerprint.\\033[0m\\n"; printf "\\033[38;2;221;205;239mOnly accept it if you have verified it through a trusted source.\\033[0m\\n"; printf "Your configured SSH host-key policy remains in effect. After this session,\\n"; printf "return to TunnelWizard and choose Retry to start the tunnel.\\n\\n"; verify_input=/dev/stdin; if { : </dev/tty; } 2>/dev/null; then verify_input=/dev/tty; fi; verify_ssh_args=(-o BatchMode=no -i "$verify_identity" -l "$verify_user"); if [[ -f "$verify_config" ]]; then verify_ssh_args=(-F "$verify_config" "${verify_ssh_args[@]}"); fi; ssh "${verify_ssh_args[@]}" "$verify_host" < "$verify_input"; verify_status=$?; printf "\\nInteractive SSH session ended (exit status %s).\\n" "$verify_status"; read -r -p "Press Enter to close this window... " _ < "$verify_input" || true; exit "$verify_status"' \
+            wizard-verify "$encoded_name" "$encoded_host" "$encoded_user" \
+            "$encoded_identity" "$encoded_verify_config" \
             </dev/null >/dev/null 2>&1; then
             return 0
         fi
