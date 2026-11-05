@@ -146,10 +146,11 @@ an interactive SSH session in a separate terminal when a supported launcher is
 available. The window shows a purple explanation and uses the same SSH host,
 user, identity, and SSH config as the tunnel. Review the displayed fingerprint
 and accept it only if you have verified it through a trusted source. Once the
-session opens, exit it, return to TunnelWizard, and choose **Retry**. TunnelWizard
-does not accept keys or weaken SSH's configured host-key policy. A changed host
-key is treated as a security warning and does not trigger the verification
-session. If a separate terminal cannot be opened, connect manually using SSH.
+session opens, exit it, then type `exit` at the local shell prompt to close the
+window. Return to TunnelWizard and choose **Retry**. TunnelWizard does not accept keys or
+weaken SSH's configured host-key policy. A changed host key is treated as a
+security warning and does not trigger the verification session. If a separate
+terminal cannot be opened, connect manually using SSH.
 
 ### Local hostnames and Windows hosts file
 
