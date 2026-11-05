@@ -136,6 +136,11 @@ When configured, the dashboard displays each local hostname beside its forward
 in bright text. This reflects the config only; it does not indicate whether a
 matching hosts-file or DNS entry is installed.
 
+Press `K` on the dashboard to stop all tracked tunnel subprocesses while
+leaving TunnelWizard open. Active tunnel statuses change to `STOPPED`; press
+`Ctrl+R` to restart them. The `RUNNING` status is highlighted in purple.
+`Ctrl+C` still stops the tunnels and exits the wizard.
+
 ### Local hostnames and Windows hosts file
 
 Currently this feature is only usable on windows.

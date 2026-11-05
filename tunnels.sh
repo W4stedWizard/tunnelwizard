@@ -582,7 +582,7 @@ status_badge() {
     printf -v padded ' %-9s' "$status"
 
     case "$status" in
-        RUNNING)  code='38;2;181;245;190;48;2;27;67;44' ;;
+        RUNNING)  code='38;2;224;188;255;48;2;68;43;91' ;;
         STARTING) code='38;2;185;235;250;48;2;29;60;76' ;;
         STOPPED)  code='38;2;255;190;190;48;2;92;37;49' ;;
         SKIPPED)  code='38;2;255;222;165;48;2;89;67;36' ;;
@@ -881,12 +881,14 @@ render_message() {
 }
 
 render_global_controls() {
-    local full='  A Aliases    H Hosts    Ctrl+R Restart tunnels    Ctrl+C Stop and exit'
+    local full='  A Aliases    K Kill tunnels    H Hosts    Ctrl+R Restart tunnels    Ctrl+C Stop and exit'
 
     if ((TERM_WIDTH <= ${#full})); then
         if ((TERM_WIDTH < 34)); then
             printf '  '
             key_hint 'A'
+            printf ' '
+            key_hint 'K'
             printf ' '
             key_hint 'H'
             printf ' '
@@ -898,6 +900,8 @@ render_global_controls() {
         printf '  '
         key_hint 'A'
         printf ' Aliases  '
+        key_hint 'K'
+        printf ' Kill  '
         key_hint 'H'
         printf ' Hosts  '
         key_hint '^R'
@@ -910,6 +914,8 @@ render_global_controls() {
     printf '  '
     key_hint 'A'
     printf ' Aliases    '
+    key_hint 'K'
+    printf ' Kill tunnels    '
     key_hint 'H'
     printf '  Hosts    '
     key_hint 'Ctrl+R'
@@ -949,7 +955,7 @@ render_dashboard_shell_controls() {
 }
 
 render_dashboard_global_controls() {
-    local full='  S  Quick launch    A  Aliases    H  Hosts    Ctrl+R  Restart    Ctrl+C  Stop and exit'
+    local full='  S  Quick launch    A  Aliases    K  Kill tunnels    H  Hosts    Ctrl+R  Restart    Ctrl+C  Stop and exit'
 
     if ((TERM_WIDTH <= ${#full})); then
         if ((TERM_WIDTH < 34)); then
@@ -957,6 +963,8 @@ render_dashboard_global_controls() {
             key_hint 'S'
             printf ' '
             key_hint 'A'
+            printf ' '
+            key_hint 'K'
             printf ' '
             key_hint 'H'
             printf ' '
@@ -970,6 +978,8 @@ render_dashboard_global_controls() {
         printf ' Launch  '
         key_hint 'A'
         printf ' Aliases  '
+        key_hint 'K'
+        printf ' Kill  '
         key_hint 'H'
         printf ' Hosts  '
         key_hint '^R'
@@ -984,6 +994,8 @@ render_dashboard_global_controls() {
     printf '  Quick launch    '
     key_hint 'A'
     printf '  Aliases    '
+    key_hint 'K'
+    printf '  Kill tunnels    '
     key_hint 'H'
     printf '  Hosts    '
     key_hint 'Ctrl+R'
@@ -1756,6 +1768,24 @@ stop_tunnels() {
 
     PIDS=()
     PID_TO_TUNNEL=()
+}
+
+kill_all_tunnels() {
+    local id active_count=${#PIDS[@]}
+
+    if ((active_count == 0)); then
+        MESSAGE='No active tunnel subprocesses.'
+    else
+        stop_tunnels
+        for id in "${TUNNEL_IDS[@]}"; do
+            case "${STATUS[$id]:-}" in
+                STARTING|RUNNING) STATUS["$id"]="STOPPED" ;;
+            esac
+        done
+        MESSAGE="Stopped $active_count tunnel subprocess(es). Ctrl+R restarts them."
+    fi
+
+    REDRAW_NEEDED=1
 }
 
 cleanup() {
@@ -2652,6 +2682,9 @@ while true; do
         esac
     elif [[ "$UI_MODE" == dashboard ]]; then
         case "$KEY" in
+            k|K)
+                kill_all_tunnels
+                ;;
             a|A)
                 UI_MODE=aliases
                 ALIAS_SELECTION=0
