@@ -18,6 +18,7 @@ VERIFY_IDENTITY_B64=""
 VERIFY_LABEL_B64=""
 COMMAND_MODE=0
 COMMAND_B64=""
+LOCAL_SHELL_MODE=0
 
 set_ssh_config_path() {
     local path=$1
@@ -65,12 +66,13 @@ parse_cli_args() {
     VERIFY_LABEL_B64=""
     COMMAND_MODE=0
     COMMAND_B64=""
+    LOCAL_SHELL_MODE=0
 
     while (($#)); do
         case "$1" in
             --ssh-config|-cssh)
                 if ((ssh_config_seen)) || (($# < 2)) || [[ -z "$2" || "$2" == -* ]]; then
-                    echo 'Usage: tunnels.sh [TUNNELS_CONFIG] [--ssh-config|-cssh SSH_CONFIG]' >&2
+                    echo 'Usage: TW.sh [TUNNELS_CONFIG] [--ssh-config|-cssh SSH_CONFIG]' >&2
                     return 2
                 fi
                 set_ssh_config_path "$2" || return $?
@@ -88,7 +90,7 @@ parse_cli_args() {
                 shift
                 ;;
             --connect-base64)
-                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE)) || (($# < 2)) ||
+                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE || LOCAL_SHELL_MODE)) || (($# < 2)) ||
                    [[ ! "$2" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
                     echo 'Invalid encoded SSH target.' >&2
                     return 2
@@ -98,7 +100,7 @@ parse_cli_args() {
                 shift 2
                 ;;
             --verify-host-key-base64)
-                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE)) || (($# < 5)) ||
+                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE || LOCAL_SHELL_MODE)) || (($# < 5)) ||
                    [[ ! "$2" =~ ^[A-Za-z0-9+/]+={0,2}$ ||
                       ! "$3" =~ ^[A-Za-z0-9+/]+={0,2}$ ||
                       ! "$4" =~ ^[A-Za-z0-9+/]+={0,2}$ ||
@@ -114,7 +116,7 @@ parse_cli_args() {
                 shift 5
                 ;;
             --run-command-base64)
-                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE)) || (($# < 2)) ||
+                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE || LOCAL_SHELL_MODE)) || (($# < 2)) ||
                    [[ ! "$2" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
                     echo 'Invalid encoded local command.' >&2
                     return 2
@@ -122,6 +124,14 @@ parse_cli_args() {
                 COMMAND_MODE=1
                 COMMAND_B64=$2
                 shift 2
+                ;;
+            --local-shell)
+                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE || LOCAL_SHELL_MODE)); then
+                    echo 'Invalid internal local-shell mode.' >&2
+                    return 2
+                fi
+                LOCAL_SHELL_MODE=1
+                shift
                 ;;
             --ssh-config-b64)
                 if ((ssh_config_seen)) || (($# < 2)); then
@@ -147,8 +157,8 @@ parse_cli_args() {
                 ;;
             --)
                 shift
-                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE)) || ((config_seen)) || (($# > 1)); then
-                    echo 'Usage: tunnels.sh [TUNNELS_CONFIG] [--ssh-config|-cssh SSH_CONFIG]' >&2
+                if ((CONNECT_MODE || VERIFY_HOST_KEY_MODE || COMMAND_MODE || LOCAL_SHELL_MODE)) || ((config_seen)) || (($# > 1)); then
+                    echo 'Usage: TW.sh [TUNNELS_CONFIG] [--ssh-config|-cssh SSH_CONFIG]' >&2
                     return 2
                 fi
                 if (($# == 1)); then CONFIG=$1; fi
@@ -157,7 +167,7 @@ parse_cli_args() {
                 ;;
             -* )
                 echo "Unknown option: $1" >&2
-                echo 'Usage: tunnels.sh [TUNNELS_CONFIG] [--ssh-config|-cssh SSH_CONFIG]' >&2
+                echo 'Usage: TW.sh [TUNNELS_CONFIG] [--ssh-config|-cssh SSH_CONFIG]' >&2
                 return 2
                 ;;
             *)
@@ -172,7 +182,7 @@ parse_cli_args() {
         esac
     done
 
-    if ((SSH_CONFIG_B64_USED && !CONNECT_MODE && !VERIFY_HOST_KEY_MODE)); then
+    if ((SSH_CONFIG_B64_USED && !CONNECT_MODE && !VERIFY_HOST_KEY_MODE && !LOCAL_SHELL_MODE)); then
         echo 'Internal SSH config option requires an internal SSH mode.' >&2
         return 2
     fi
@@ -186,6 +196,10 @@ parse_cli_args() {
     fi
     if ((COMMAND_MODE && (config_seen || ssh_config_seen))); then
         echo 'Internal local command mode does not accept config paths.' >&2
+        return 2
+    fi
+    if ((LOCAL_SHELL_MODE && config_seen)); then
+        echo 'Internal local-shell mode does not accept a TunnelWizard config path.' >&2
         return 2
     fi
 }
@@ -210,11 +224,54 @@ if ((!COMMAND_MODE)); then validate_ssh_config || exit $?; fi
 if ((COMMAND_MODE)); then
     local_command=$(decode_base64 "$COMMAND_B64") || exit 2
     [[ -n "$local_command" ]] || exit 2
-    bash -ic "$local_command"
+    "$BASH" -ic "$local_command"
     command_status=$?
     printf '\nCommand ended (exit status %s).\n' "$command_status"
     read -r -p 'Press Enter to close this window... ' _ || true
     exit "$command_status"
+fi
+
+# A local interactive shell can inherit the selected OpenSSH config through
+# an exported Bash function without changing the user's global SSH setup.
+if ((LOCAL_SHELL_MODE)); then
+    if [[ -f "$SSH_CONFIG_FILE" ]]; then
+        export WIZARD_SSH_CONFIG_FILE="$SSH_CONFIG_FILE"
+        export WIZARD_SSH_CONFIG_ENABLED=1
+    else
+        export WIZARD_SSH_CONFIG_FILE=""
+        export WIZARD_SSH_CONFIG_ENABLED=0
+    fi
+    ssh() {
+        if [[ "$WIZARD_SSH_CONFIG_ENABLED" == 1 ]]; then
+            command ssh -F "$WIZARD_SSH_CONFIG_FILE" "$@"
+        else
+            command ssh "$@"
+        fi
+    }
+    export -f ssh
+
+    # Git Bash's $BASH can be /bin/bash. Use PATH lookup on Windows rather
+    # than passing that POSIX path through exec into a native terminal pane.
+    local_shell_bash=$BASH
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            command -v bash >/dev/null 2>&1 || {
+                echo 'Cannot start the local shell: Bash is not available on PATH.' >&2
+                exit 1
+            }
+            # A command name lets Git Bash resolve and launch its native
+            # executable using its own PATH/MSYS runtime handling.
+            local_shell_bash=bash
+            ;;
+    esac
+
+    # The WezTerm CLI client's stdio can be detached from the spawned pane.
+    # Reattach the interactive shell to its controlling terminal so it doesn't
+    # immediately see EOF and close the new window.
+    if { : </dev/tty; } 2>/dev/null; then
+        exec "$local_shell_bash" -i </dev/tty >/dev/tty 2>&1
+    fi
+    exec "$local_shell_bash" -i
 fi
 
 ssh_with_config() {
@@ -280,7 +337,7 @@ if ((VERIFY_HOST_KEY_MODE)); then
     verify_status=$?
     printf '\nInteractive SSH session ended (exit status %s).\n' "$verify_status"
     printf 'Type exit to close this verification window.\n'
-    exec bash -i
+    exec "$BASH" -i
 fi
 
 CONNECT_TIMEOUT=10
@@ -322,9 +379,13 @@ GROUP_TUNNEL_ID=""
 GROUP_FORWARD_INDEX=0
 MACHINE_NUMBER=0
 HOSTS_MANAGEMENT=no
+QUICK_LAUNCH_ALT=no
 CONFIG_ERROR=0
+CONFIG_NAME=${CONFIG##*/}
+CONFIG_NAME=${CONFIG_NAME%.conf}
 
 UI_MODE="dashboard"
+HELP_RETURN_MODE="dashboard"
 SHELL_SELECTION=0
 MENU_SCROLL=0
 ALIAS_SELECTION=0
@@ -378,11 +439,22 @@ fi
 #   shell   DISPLAY_NAME SSH_TARGET
 #   custom_command DISPLAY_NAME LOCAL_BASH_COMMAND
 #   hosts_management yes|no (default: no; only enables the manual Windows menu)
+#   quick_launch_alt yes|no (default: no; Alt+1..9 open entries 10..18)
+#   name DISPLAY_NAME (optional window-title name; defaults to the config filename)
 #   A in the dashboard manages host-wide Bash aliases in ~/.bashrc, not config entries.
 #
 # Each tunnel belongs to the most recently declared machine.
 # GROUP=yes: all that machine's forwards share an SSH process.
 # GROUP=no:  each forward gets its own SSH process.
+
+name() {
+    if (($# != 1)) || [[ -z "$1" || "$1" =~ [[:cntrl:]] ]]; then
+        echo 'name requires one non-empty title without control characters.' >&2
+        CONFIG_ERROR=1
+        return 2
+    fi
+    CONFIG_NAME=$1
+}
 
 machine() {
     if (($# != 5)); then
@@ -420,6 +492,15 @@ hosts_management() {
         return 2
     fi
     HOSTS_MANAGEMENT=$1
+}
+
+quick_launch_alt() {
+    if (($# != 1)) || [[ "$1" != yes && "$1" != no ]]; then
+        echo 'Usage: quick_launch_alt yes|no' >&2
+        CONFIG_ERROR=1
+        return 2
+    fi
+    QUICK_LAUNCH_ALT=$1
 }
 
 valid_local_hostname() {
@@ -611,7 +692,7 @@ if ! source "$CONFIG"; then
 fi
 
 if ((CONFIG_ERROR)); then
-    echo "Invalid tunnel or hosts management setting in $CONFIG" >&2
+    echo "Invalid tunnel or optional setting in $CONFIG" >&2
     exit 1
 fi
 
@@ -738,6 +819,25 @@ truncate_text() {
         fi
     else
         printf '%s' "$text"
+    fi
+}
+
+truncate_cell_name() {
+    local text=$1 max=$2
+    if ((${#text} > max)); then
+        printf '%s»' "${text:0:max-1}"
+    else
+        printf '%s' "$text"
+    fi
+}
+
+# Only append a hint when the complete footer leaves the last column free.
+render_footer_help_hint() {
+    local base_width=$1
+    if ((TERM_WIDTH > base_width + 8)); then
+        printf '  '
+        key_hint '?'
+        printf ' Help'
     fi
 }
 
@@ -954,11 +1054,14 @@ render_message() {
 }
 
 render_global_controls() {
-    local full='  A Aliases    K Kill tunnels    H Hosts    Ctrl+R Restart tunnels    Ctrl+C Stop and exit'
+    local full='  N Local shell    A Aliases    K Kill tunnels    H  Hosts    Ctrl+R  Restart tunnels    Ctrl+C  Stop and exit'
+    local compact='  N Shell  A Aliases  K Kill  H Hosts  ^R Restart  ^C Exit'
 
     if ((TERM_WIDTH <= ${#full})); then
-        if ((TERM_WIDTH < 34)); then
+        if ((TERM_WIDTH <= ${#compact} + 1)); then
             printf '  '
+            key_hint 'N'
+            printf ' '
             key_hint 'A'
             printf ' '
             key_hint 'K'
@@ -968,9 +1071,12 @@ render_global_controls() {
             key_hint '^R'
             printf ' '
             key_hint '^C'
+            render_footer_help_hint 17
             return
         fi
         printf '  '
+        key_hint 'N'
+        printf ' Shell  '
         key_hint 'A'
         printf ' Aliases  '
         key_hint 'K'
@@ -981,10 +1087,13 @@ render_global_controls() {
         printf ' Restart  '
         key_hint '^C'
         printf ' Exit'
+        render_footer_help_hint "${#compact}"
         return
     fi
 
     printf '  '
+    key_hint 'N'
+    printf ' Local shell    '
     key_hint 'A'
     printf ' Aliases    '
     key_hint 'K'
@@ -995,10 +1104,14 @@ render_global_controls() {
     printf '  Restart tunnels    '
     key_hint 'Ctrl+C'
     printf '  Stop and exit'
+    render_footer_help_hint "${#full}"
 }
 
 render_dashboard_shell_controls() {
     local full='  1–9 Open instantly    ←/→/↑/↓ Navigate    Enter Open'
+    local compact='  1–9 Open  ↑↓←→ Move  Enter Open'
+    local alt_hint='  Alt+1–9 Open 10–18'
+    local shown_width
 
     if ((TERM_WIDTH > ${#full})); then
         printf '  '
@@ -1008,14 +1121,23 @@ render_dashboard_shell_controls() {
         printf ' Navigate    '
         key_hint 'Enter'
         printf ' Open'
+        shown_width=${#full}
+        if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)) &&
+           ((TERM_WIDTH > shown_width + ${#alt_hint})); then
+            key_hint '  Alt+1–9'
+            printf ' Open 10–18'
+            shown_width=$((shown_width + ${#alt_hint}))
+        fi
+        render_footer_help_hint "$shown_width"
     else
         printf '  '
-        if ((TERM_WIDTH < 34)); then
+        if ((TERM_WIDTH <= ${#compact} + 1)); then
             key_hint '1–9'
             printf ' '
             key_hint '↑↓←→'
             printf ' '
             key_hint 'Enter'
+            render_footer_help_hint 18
         else
             key_hint '1–9'
             printf ' Open '
@@ -1023,17 +1145,21 @@ render_dashboard_shell_controls() {
             printf ' Move '
             key_hint 'Enter'
             printf ' Open'
+            render_footer_help_hint "${#compact}"
         fi
     fi
 }
 
 render_dashboard_global_controls() {
-    local full='  S  Quick launch    A  Aliases    K  Kill tunnels    H  Hosts    Ctrl+R  Restart    Ctrl+C  Stop and exit'
+    local full='  S  Quick launch    N  Local shell    A  Aliases    K  Kill tunnels    H  Hosts    Ctrl+R  Restart    Ctrl+C  Stop and exit'
+    local compact='  S Launch  N Shell  A Aliases  K Kill  H Hosts  ^R Restart  ^C Exit'
 
     if ((TERM_WIDTH <= ${#full})); then
-        if ((TERM_WIDTH < 34)); then
+        if ((TERM_WIDTH <= ${#compact} + 1)); then
             printf '  '
             key_hint 'S'
+            printf ' '
+            key_hint 'N'
             printf ' '
             key_hint 'A'
             printf ' '
@@ -1044,11 +1170,14 @@ render_dashboard_global_controls() {
             key_hint '^R'
             printf ' '
             key_hint '^C'
+            render_footer_help_hint 19
             return
         fi
         printf '  '
         key_hint 'S'
         printf ' Launch  '
+        key_hint 'N'
+        printf ' Shell  '
         key_hint 'A'
         printf ' Aliases  '
         key_hint 'K'
@@ -1059,12 +1188,15 @@ render_dashboard_global_controls() {
         printf ' Restart  '
         key_hint '^C'
         printf ' Exit'
+        render_footer_help_hint "${#compact}"
         return
     fi
 
     printf '  '
     key_hint 'S'
     printf '  Quick launch    '
+    key_hint 'N'
+    printf '  Local shell    '
     key_hint 'A'
     printf '  Aliases    '
     key_hint 'K'
@@ -1075,6 +1207,7 @@ render_dashboard_global_controls() {
     printf '  Restart    '
     key_hint 'Ctrl+C'
     printf '  Stop and exit'
+    render_footer_help_hint "${#full}"
 }
 
 render_dashboard_footer() {
@@ -1176,7 +1309,7 @@ render_hidden_tunnels() {
 
 render_shell_cell() {
     local index=$1 cell_width=$2
-    local marker=' ' hotkey=' ' name name_width padded_name
+    local marker=' ' hotkey=' ' name name_width padded_name prefix
 
     if ((index == SHELL_SELECTION)); then
         marker='›'
@@ -1184,31 +1317,40 @@ render_shell_cell() {
 
     if ((index < 9)); then
         hotkey=$((index + 1))
+    elif [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((index < 18)); then
+        # A1..A9 are the compact cell labels for Alt+1..Alt+9.
+        hotkey="A$((index - 8))"
     fi
 
-    name_width=$((cell_width - 4))
-    name=$(truncate_text "${QUICK_NAMES[$index]}" "$name_width")
+    prefix="$marker $hotkey "
+    if ((TERM_WIDTH < 36)); then
+        prefix="$marker$hotkey "
+    fi
+    name_width=$((cell_width - ${#prefix}))
+    name=$(truncate_cell_name "${QUICK_NAMES[$index]}" "$name_width")
     printf -v padded_name '%-*s' "$name_width" "$name"
 
     if ((index == SHELL_SELECTION)); then
         # Dark-grey background (#4B4B52), with purple selection accents.
-        colour '1;38;2;184;127;242;48;2;75;75;82' "$marker"
-        colour '1;38;2;184;127;242;48;2;75;75;82' \
-            " $hotkey $padded_name"
+        colour '1;38;2;184;127;242;48;2;75;75;82' "$prefix$padded_name"
     else
-        printf '%s %s %s' "$marker" "$hotkey" "$padded_name"
+        printf '%s%s' "$prefix" "$padded_name"
     fi
 }
 
 render_shell_row() {
     local first=$1 count=$2 cell_width=$3
-    local index
+    local index margin='  ' gap='  '
 
-    printf '  '
+    if ((TERM_WIDTH < 36)); then
+        margin=' '
+        gap=' '
+    fi
+    printf '%s' "$margin"
 
     for ((index = first; index < first + 3 && index < count; index++)); do
         if ((index > first)); then
-            printf '  '
+            printf '%s' "$gap"
         fi
 
         render_shell_cell "$index" "$cell_width"
@@ -1217,7 +1359,9 @@ render_shell_row() {
 
 dashboard_shell_count() {
     local count=${#QUICK_NAMES[@]}
-    ((count > 9)) && count=9
+    local limit=9
+    [[ "$QUICK_LAUNCH_ALT" == yes ]] && limit=18
+    ((count > limit)) && count=$limit
     printf '%s' "$count"
 }
 
@@ -1259,11 +1403,11 @@ render_dashboard() {
         body_line render_tunnel_heading "$label_width" "$host_width"
         body_line render_rule
 
-        # Two blank rows, a title, a rule, then the top-nine grid.
+        # Two blank rows, a title, a rule, then the visible shortcut grid.
         grid_lines=0
 
         if ((shell_count > 0)); then
-            if ((TERM_WIDTH < 36)); then
+            if ((TERM_WIDTH < 25)); then
                 grid_lines=5
             else
                 grid_lines=$((4 + (top_count + 2) / 3))
@@ -1295,15 +1439,23 @@ render_dashboard() {
     if ((shell_count > 0)); then
         body_line :
         body_line :
-        body_line print_clipped_line '  QUICK LAUNCH (TOP 9)'
+        if [[ "$QUICK_LAUNCH_ALT" == yes ]]; then
+            body_line print_clipped_line '  QUICK LAUNCH (TOP 18)'
+        else
+            body_line print_clipped_line '  QUICK LAUNCH (TOP 9)'
+        fi
         body_line render_rule
 
-        if ((TERM_WIDTH < 36)); then
+        if ((TERM_WIDTH < 25)); then
             body_line print_clipped_line \
                 '  Widen this window to see the three-column grid.'
         else
             # Keep the final terminal column free to prevent wrapping.
-            cell_width=$(((TERM_WIDTH - 7) / 3))
+            if ((TERM_WIDTH < 36)); then
+                cell_width=$(((TERM_WIDTH - 4) / 3))
+            else
+                cell_width=$(((TERM_WIDTH - 7) / 3))
+            fi
 
             for ((index = 0; index < top_count; index += 3)); do
                 body_line render_shell_row "$index" "$top_count" "$cell_width"
@@ -1333,6 +1485,7 @@ render_menu_footer() {
 }
 
 render_menu_controls_full() {
+    local full='  1–9 Open instantly    ←/→/↑/↓ Navigate    Enter Open    Esc/Q Return'
     printf '  '
     key_hint '1–9'
     printf ' Open instantly    '
@@ -1344,24 +1497,32 @@ render_menu_controls_full() {
     printf '/'
     key_hint 'Q'
     printf ' Return'
+    render_footer_help_hint "${#full}"
 }
 
 render_menu_controls_short() {
     printf '  '
     key_hint '1–9'
-    printf ' Open '
+    if ((TERM_WIDTH >= 31)); then printf ' Open '; else printf ' '; fi
     key_hint '↑↓←→'
-    printf ' Navigate'
+    if ((TERM_WIDTH >= 31)); then printf ' Navigate'; fi
 }
 
 render_menu_return_hint() {
+    local base='  Enter Open Esc/Q Return'
     printf '  '
     key_hint 'Enter'
-    printf ' Open '
+    if ((TERM_WIDTH >= 35)); then
+        printf ' Open '
+    else
+        printf ' '
+        base='  Enter Esc/Q'
+    fi
     key_hint 'Esc'
     printf '/'
     key_hint 'Q'
-    printf ' Return'
+    if ((TERM_WIDTH >= 35)); then printf ' Return'; fi
+    render_footer_help_hint "${#base}"
 }
 
 render_shell_menu() {
@@ -1385,15 +1546,19 @@ render_shell_menu() {
 
     body_line render_header_line
     body_line :
-    body_line printf '%s' '  QUICK LAUNCH · SSH SHELLS & LOCAL COMMANDS'
+    body_line print_clipped_line '  QUICK LAUNCH · SSH SHELLS & LOCAL COMMANDS'
     body_line render_rule
 
     # The full S menu includes connections after #9.
-    if ((TERM_WIDTH < 36)); then
+    if ((TERM_WIDTH < 25)); then
         body_line print_clipped_line \
             '  Widen this window to see the three-column grid.'
     else
-        cell_width=$(((TERM_WIDTH - 7) / 3))
+        if ((TERM_WIDTH < 36)); then
+            cell_width=$(((TERM_WIDTH - 4) / 3))
+        else
+            cell_width=$(((TERM_WIDTH - 7) / 3))
+        fi
         grid_rows=$(((count + 2) / 3))
         total_lines=$grid_rows
 
@@ -1492,15 +1657,24 @@ render_alias_menu() {
         footer_at "$((TERM_HEIGHT - 1))" print_clipped_line \
             '  A Add  E Edit  D Delete  I Import  W Export  C Clear All'
     fi
-    footer_at "$TERM_HEIGHT" print_clipped_line \
-        '  ↑/↓ Select  Esc/Q Return · Bash only'
+    footer_at "$TERM_HEIGHT" render_alias_return_hint
     finish_screen
 }
 
+render_alias_return_hint() {
+    local base='  ↑/↓ Select  Esc/Q Return · Bash only'
+    if ((TERM_WIDTH <= ${#base} + 8)); then
+        base='  ↑/↓ Select  Esc/Q Return'
+    fi
+    if ((TERM_WIDTH <= ${#base} + 8)); then
+        base='  ↑↓ Esc/Q'
+    fi
+    print_clipped_line "$base"
+    render_footer_help_hint "${#base}"
+}
+
 render_hosts_menu() {
-    local footer_rows=2 index config_name
-    config_name=${CONFIG##*/}
-    [[ "$config_name" == *.conf && "$config_name" != .conf ]] && config_name=${config_name%.conf}
+    local footer_rows=2 index
     ensure_terminal_size
     if is_windows_shell && ((TERM_WIDTH < 96)); then
         footer_rows=3
@@ -1510,9 +1684,9 @@ render_hosts_menu() {
     body_line render_header_line
     body_line :
     if is_windows_shell; then
-        body_line print_clipped_line "  WINDOWS HOSTS · $config_name"
+        body_line print_clipped_line "  WINDOWS HOSTS · $CONFIG_NAME"
     else
-        body_line print_clipped_line "  LOCAL HOSTNAMES · $config_name"
+        body_line print_clipped_line "  LOCAL HOSTNAMES · $CONFIG_NAME"
     fi
     body_line render_rule
     body_line render_hosts_warning
@@ -1672,11 +1846,18 @@ hosts_status_style() {
 }
 
 render_hosts_return_controls() {
+    if ((TERM_WIDTH < 44)); then
+        printf '  '
+        key_hint 'Esc/Q'
+        render_footer_help_hint 7
+        return
+    fi
     printf '  '
     key_hint 'Esc'
     printf ' or '
     key_hint 'Q'
     printf ' Return (sync is Windows-only)'
+    render_footer_help_hint 40
 }
 
 render_hosts_controls() {
@@ -1691,6 +1872,7 @@ render_hosts_controls() {
     printf ' or '
     key_hint 'Q'
     printf ' Return'
+    render_footer_help_hint 89
 }
 
 render_hosts_controls_short() {
@@ -1713,6 +1895,7 @@ render_hosts_controls_short() {
 }
 
 render_hosts_controls_return() {
+    local base
     printf '  '
     if ((TERM_WIDTH < 24)); then
         key_hint '^D'
@@ -1720,32 +1903,90 @@ render_hosts_controls_return() {
         key_hint 'Esc'
         printf ' '
         key_hint 'Q'
+        base=15
     elif ((TERM_WIDTH < 46)); then
         key_hint '^D'
         printf ' all TW  '
         key_hint 'Esc'
         printf ' or '
         key_hint 'Q'
+        base=21
     elif ((TERM_WIDTH < 64)); then
         key_hint '^D'
         printf ' Delete all TW blocks   '
         key_hint 'Esc'
         printf ' or '
         key_hint 'Q'
+        base=37
     else
         key_hint 'Ctrl+D'
         printf ' Delete all TW host blocks    '
         key_hint 'Esc'
         printf ' or '
         key_hint 'Q'
+        base=51
     fi
-    printf ' Return'
+    if ((TERM_WIDTH >= 34)); then
+        printf ' Return'
+        base=$((base + 7))
+    fi
+    render_footer_help_hint "$base"
+}
+
+render_help() {
+    begin_screen 1
+    body_line render_header_line
+    body_line :
+    case "$HELP_RETURN_MODE" in
+        dashboard)
+            body_line print_clipped_line '  HELP · DASHBOARD'
+            body_line render_rule
+            body_line print_clipped_line '  1–9  Open the first nine quick-launch entries'
+            if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)); then
+                body_line print_clipped_line '  Alt+1–9  Open entries 10–18 (A1–A9 in the menu)'
+            fi
+            body_line print_clipped_line '  Arrows  Select quick entry · Enter  Open selected'
+            body_line print_clipped_line '  S  Full quick-launch menu · N  New local SSH-configured shell'
+            body_line print_clipped_line '  A  Bash aliases · K  Stop tunnels'
+            body_line print_clipped_line '  H  Windows hosts (requires hosts_management yes)'
+            ;;
+        menu)
+            body_line print_clipped_line '  HELP · QUICK LAUNCH'
+            body_line render_rule
+            body_line print_clipped_line '  1–9  Open the first nine entries'
+            if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)); then
+                body_line print_clipped_line '  Alt+1–9  Open entries 10–18 (A1–A9 in the grid)'
+            fi
+            body_line print_clipped_line '  Arrows  Navigate all entries · Enter  Open selected'
+            body_line print_clipped_line '  Esc/Q  Return to dashboard'
+            ;;
+        aliases)
+            body_line print_clipped_line '  HELP · BASH ALIASES (~/.bashrc)'
+            body_line render_rule
+            body_line print_clipped_line '  Up/Down  Select alias · A  Add · E  Edit · D  Delete'
+            body_line print_clipped_line '  I  Import ./bash-aliases.conf · W  Export to it'
+            body_line print_clipped_line '  C  Clear all managed aliases · Esc/Q  Dashboard'
+            ;;
+        hosts)
+            body_line print_clipped_line '  HELP · WINDOWS HOSTS'
+            body_line render_rule
+            body_line print_clipped_line '  A  Apply this config · D  Delete this config block'
+            body_line print_clipped_line '  Ctrl+D  Delete all TunnelWizard hosts blocks (all configs)'
+            body_line print_clipped_line '  Actions preview and ask before editing; Esc/Q  Dashboard'
+            body_line print_clipped_line '  Sync is Windows-only; mappings persist after exit.'
+            ;;
+    esac
+    body_line :
+    body_line print_clipped_line '  Ctrl+R  Restart tunnels · Ctrl+C  Stop and exit'
+    footer_at "$TERM_HEIGHT" print_clipped_line '  ? / Esc / Q  Return to previous screen'
+    finish_screen
 }
 
 render_screen() {
     local resize_event=$RESIZE_EVENT
 
     case "$UI_MODE" in
+        help) render_help ;;
         menu) render_shell_menu ;;
         aliases) render_alias_menu ;;
         hosts) render_hosts_menu ;;
@@ -1759,7 +2000,7 @@ render_screen() {
 }
 
 # Move horizontally within the current row, wrapping at its edges.
-# The dashboard passes a count of at most nine; the S menu uses all quick entries.
+# The dashboard passes its visible shortcut count; S uses every entry.
 move_shell_horizontal() {
     local direction=$1
     local count=${2:-${#QUICK_NAMES[@]}}
@@ -2062,6 +2303,40 @@ running_in_wezterm() {
     [[ -n "${WEZTERM_PANE:-}" || "${TERM_PROGRAM:-}" == WezTerm ]]
 }
 
+# Convert a filesystem path for the native Windows WezTerm client. On
+# non-Windows shells the path is returned unchanged; on Git Bash/MSYS/Cygwin
+# the Windows client cannot resolve POSIX paths, so a missing, failing, or
+# empty cygpath conversion must fail rather than pass the path through.
+to_windows_path() {
+    local path=$1 converted
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            if ! command -v cygpath >/dev/null 2>&1 ||
+               ! converted=$(cygpath -w "$path") ||
+               [[ -z "$converted" ]]; then
+                echo "Cannot convert path for the Windows WezTerm client: $path" >&2
+                return 1
+            fi
+            printf '%s' "$converted"
+            ;;
+        *)
+            printf '%s' "$path"
+            ;;
+    esac
+}
+
+# Spawn in WezTerm's local mux domain on Windows; elsewhere keep the current
+# pane's domain. This avoids expanding an empty array on supported Bash 4.3.
+spawn_wezterm() {
+    local wezterm_bin=$1
+    shift
+    if is_windows_shell; then
+        "$wezterm_bin" cli spawn --new-window --domain-name local "$@"
+    else
+        "$wezterm_bin" cli spawn --new-window "$@"
+    fi
+}
+
 open_shell_in_current_window() {
     local target=$1
     local name=$2
@@ -2105,13 +2380,13 @@ open_shell_window() {
         wezterm_bin=$(command -v wezterm)
         bash_bin=$(command -v bash)
 
-        if command -v cygpath >/dev/null 2>&1; then
-            bash_bin=$(cygpath -w "$bash_bin")
-        fi
-
         encoded_title=$(printf '%s' "$name" | base64 | tr -d '\r\n')
 
-        if "$wezterm_bin" cli spawn --new-window --cwd "$HOME" -- \
+        if ! bash_bin=$(to_windows_path "$bash_bin") ||
+           ! workdir_win=$(to_windows_path "$HOME"); then
+            # Skip the WezTerm launch and continue to the fallback launcher.
+            :
+        elif spawn_wezterm "$wezterm_bin" --cwd "$workdir_win" -- \
             "$bash_bin" -c \
             'printf "\033]1337;SetUserVar=SSH_WIZARD_TITLE=%s\007" "$2"; if [[ "$4" == 1 && ( ! -f "$3" || ! -r "$3" ) ]]; then echo "SSH config is no longer readable: $3" >&2; exit 1; fi; if [[ -f "$3" ]]; then exec ssh -F "$3" "$1"; else exec ssh "$1"; fi' \
             wizard-shell "$target" "$encoded_title" "$SSH_CONFIG_FILE" "$SSH_CONFIG_EXPLICIT" \
@@ -2142,7 +2417,7 @@ open_shell_window() {
                    WIZARD_TARGET_B64="$encoded_target" \
                    WIZARD_SSH_CONFIG_B64="$encoded_ssh_config" \
                    powershell.exe -NoProfile -NonInteractive -Command \
-                   'try { $launchArgs = "-c `"exec bash ./tunnels.sh --connect-base64 " + $env:WIZARD_TARGET_B64 + " --ssh-config-b64 " + $env:WIZARD_SSH_CONFIG_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
+                   'try { $launchArgs = "-c `"exec bash ./TW.sh --connect-base64 " + $env:WIZARD_TARGET_B64 + " --ssh-config-b64 " + $env:WIZARD_SSH_CONFIG_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
                    </dev/null >/dev/null 2>&1; then
                     MESSAGE="Opened '$name' in new window."
                     return 0
@@ -2193,11 +2468,105 @@ open_shell_window() {
     open_shell_in_current_window "$target" "$name"
 }
 
+open_local_shell_window() {
+    local wezterm_bin bash_bin bash_win workdir_win wezterm_workdir
+    local pane_id local_shell_command
+    local encoded_ssh_config=-
+
+    if ((SSH_CONFIG_EXPLICIT)); then
+        encoded_ssh_config=$(printf '%s' "$SSH_CONFIG_FILE" | base64 | tr -d '\r\n')
+    fi
+
+    if running_in_wezterm && command -v wezterm >/dev/null 2>&1; then
+        wezterm_bin=$(command -v wezterm)
+        bash_bin=$(command -v bash)
+        wezterm_workdir=$SCRIPT_DIR
+        if bash_bin=$(to_windows_path "$bash_bin") &&
+           wezterm_workdir=$(to_windows_path "$SCRIPT_DIR"); then
+            # Keep an interactive Bash as the pane's foreground process.
+            # Running TW.sh as the initial process can close the pane when
+            # its child shell exits or inherits detached stdio from the
+            # CLI launcher.
+            if pane_id=$(spawn_wezterm "$wezterm_bin" --cwd "$wezterm_workdir" -- \
+                "$bash_bin" -i </dev/null 2>/dev/null); then
+                pane_id=${pane_id//$'\r'/}
+                local_shell_command="bash ./TW.sh --local-shell --ssh-config-b64 $encoded_ssh_config"$'\n'
+                if "$wezterm_bin" cli send-text --pane-id "$pane_id" --no-paste \
+                    "$local_shell_command" >/dev/null 2>&1; then
+                    MESSAGE='Opened a local shell with the selected SSH config.'
+                    return 0
+                fi
+
+                MESSAGE='Opened a terminal, but could not start the TunnelWizard-configured shell.'
+                return 1
+            fi
+        fi
+        # A failed path conversion skips the WezTerm launch and continues to
+        # the fallback launcher below.
+    fi
+
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            if command -v powershell.exe >/dev/null 2>&1 &&
+               command -v cygpath >/dev/null 2>&1; then
+                bash_bin=$(command -v bash)
+                bash_win=$(cygpath -w "$bash_bin")
+                workdir_win=$(cygpath -w "$SCRIPT_DIR")
+
+                if WIZARD_BASH_EXE="$bash_win" \
+                   WIZARD_WORKDIR="$workdir_win" \
+                   WIZARD_SSH_CONFIG_B64="$encoded_ssh_config" \
+                   powershell.exe -NoProfile -NonInteractive -Command \
+                   'try { $launchArgs = "-c `"exec bash ./TW.sh --local-shell --ssh-config-b64 " + $env:WIZARD_SSH_CONFIG_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
+                   </dev/null >/dev/null 2>&1; then
+                    MESSAGE='Opened a local shell with the selected SSH config.'
+                    return 0
+                fi
+            fi
+            ;;
+        Darwin)
+            if command -v osascript >/dev/null 2>&1; then
+                if osascript \
+                    -e 'on run argv' \
+                    -e 'tell application "Terminal"' \
+                    -e 'do script ("bash " & quoted form of (item 1 of argv) & " --local-shell --ssh-config-b64 " & item 2 of argv)' \
+                    -e 'activate' \
+                    -e 'end tell' \
+                    -e 'end run' \
+                    -- "$SCRIPT_PATH" "$encoded_ssh_config" \
+                    </dev/null >/dev/null 2>&1; then
+                    MESSAGE='Opened a local shell with the selected SSH config.'
+                    return 0
+                fi
+            fi
+            ;;
+        *)
+            if command -v xdg-terminal-exec >/dev/null 2>&1; then
+                xdg-terminal-exec bash "$SCRIPT_PATH" --local-shell \
+                    --ssh-config-b64 "$encoded_ssh_config" \
+                    </dev/null >/dev/null 2>&1 &
+                MESSAGE='Opened a local shell with the selected SSH config.'
+                return 0
+            elif command -v x-terminal-emulator >/dev/null 2>&1; then
+                x-terminal-emulator -e bash "$SCRIPT_PATH" --local-shell \
+                    --ssh-config-b64 "$encoded_ssh_config" \
+                    </dev/null >/dev/null 2>&1 &
+                MESSAGE='Opened a local shell with the selected SSH config.'
+                return 0
+            fi
+            ;;
+    esac
+
+    MESSAGE='No supported terminal launcher is available for a new local shell.'
+    return 1
+}
+
 open_host_key_verification_window() {
     local id=$1 host=${SSH_HOST[$1]} user=${SSH_USER[$1]}
     local identity=${IDENTITY[$1]} name=${LABEL[$1]}
     local encoded_host encoded_user encoded_identity encoded_name
     local encoded_ssh_config=- pane_id verify_command
+    local wezterm_workdir
 
     encoded_host=$(printf '%s' "$host" | base64 | tr -d '\r\n')
     encoded_user=$(printf '%s' "$user" | base64 | tr -d '\r\n')
@@ -2210,15 +2579,20 @@ open_host_key_verification_window() {
     if running_in_wezterm && command -v wezterm >/dev/null 2>&1; then
         # Start WezTerm's configured default shell (often a login MSYS/MINGW
         # shell on Windows), then send only a base64-argument command to it.
-        if pane_id=$(wezterm cli spawn --new-window --cwd "$SCRIPT_DIR" \
-            </dev/null 2>/dev/null); then
-            pane_id=${pane_id//$'\r'/}
-            verify_command="exec bash ./tunnels.sh --verify-host-key-base64 $encoded_host $encoded_user $encoded_identity $encoded_name --ssh-config-b64 $encoded_ssh_config"$'\n'
-            if wezterm cli send-text --pane-id "$pane_id" --no-paste \
-                "$verify_command" >/dev/null 2>&1; then
-                return 0
+        wezterm_workdir=$SCRIPT_DIR
+        if wezterm_workdir=$(to_windows_path "$wezterm_workdir"); then
+            if pane_id=$(spawn_wezterm wezterm --cwd "$wezterm_workdir" \
+                </dev/null 2>/dev/null); then
+                pane_id=${pane_id//$'\r'/}
+                verify_command="exec bash ./TW.sh --verify-host-key-base64 $encoded_host $encoded_user $encoded_identity $encoded_name --ssh-config-b64 $encoded_ssh_config"$'\n'
+                if wezterm cli send-text --pane-id "$pane_id" --no-paste \
+                    "$verify_command" >/dev/null 2>&1; then
+                    return 0
+                fi
             fi
         fi
+        # A failed path conversion skips the WezTerm launch and continues to
+        # the fallback launcher below.
     fi
 
     case "$(uname -s)" in
@@ -2237,7 +2611,7 @@ open_host_key_verification_window() {
                    WIZARD_LABEL_B64="$encoded_name" \
                    WIZARD_SSH_CONFIG_B64="$encoded_ssh_config" \
                    powershell.exe -NoProfile -NonInteractive -Command \
-                   'try { $launchArgs = "-c `"bash ./tunnels.sh --verify-host-key-base64 " + $env:WIZARD_TARGET_B64 + " " + $env:WIZARD_USER_B64 + " " + $env:WIZARD_IDENTITY_B64 + " " + $env:WIZARD_LABEL_B64 + " --ssh-config-b64 " + $env:WIZARD_SSH_CONFIG_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
+                   'try { $launchArgs = "-c `"bash ./TW.sh --verify-host-key-base64 " + $env:WIZARD_TARGET_B64 + " " + $env:WIZARD_USER_B64 + " " + $env:WIZARD_IDENTITY_B64 + " " + $env:WIZARD_LABEL_B64 + " --ssh-config-b64 " + $env:WIZARD_SSH_CONFIG_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
                    </dev/null >/dev/null 2>&1; then
                     return 0
                 fi
@@ -2300,17 +2674,19 @@ open_command_in_current_window() {
 
 open_command_window() {
     local index=$1 name=${QUICK_NAMES[$index]} value=${QUICK_VALUES[$index]}
-    local encoded bash_bin bash_win workdir_win wezterm_bin
+    local encoded bash_bin bash_win workdir_win wezterm_bin script_win
     encoded=$(printf '%s' "$value" | base64 | tr -d '\r\n')
 
     if running_in_wezterm && command -v wezterm >/dev/null 2>&1; then
         wezterm_bin=$(command -v wezterm)
         bash_bin=$(command -v bash)
-        if command -v cygpath >/dev/null 2>&1; then
-            bash_bin=$(cygpath -w "$bash_bin")
-        fi
-        if "$wezterm_bin" cli spawn --new-window --cwd "$HOME" -- \
-            "$bash_bin" "$SCRIPT_PATH" --run-command-base64 "$encoded" \
+        if ! bash_bin=$(to_windows_path "$bash_bin") ||
+           ! workdir_win=$(to_windows_path "$HOME") ||
+           ! script_win=$(to_windows_path "$SCRIPT_PATH"); then
+            # Skip the WezTerm launch and continue to the fallback launcher.
+            :
+        elif spawn_wezterm "$wezterm_bin" --cwd "$workdir_win" -- \
+            "$bash_bin" "$script_win" --run-command-base64 "$encoded" \
             </dev/null >/dev/null 2>&1; then
             MESSAGE="Opened '$name' in new window."
             return 0
@@ -2327,7 +2703,7 @@ open_command_window() {
                 if WIZARD_BASH_EXE="$bash_win" WIZARD_WORKDIR="$workdir_win" \
                    WIZARD_COMMAND_B64="$encoded" \
                    powershell.exe -NoProfile -NonInteractive -Command \
-                   'try { $launchArgs = "-c `"exec bash ./tunnels.sh --run-command-base64 " + $env:WIZARD_COMMAND_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
+                   'try { $launchArgs = "-c `"exec bash ./TW.sh --run-command-base64 " + $env:WIZARD_COMMAND_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
                    </dev/null >/dev/null 2>&1; then
                     MESSAGE="Opened '$name' in new window."
                     return 0
@@ -2383,6 +2759,42 @@ open_quick_window() {
     fi
 }
 
+# Return success when the modal help or an Alt shortcut consumed the key.
+handle_ui_key() {
+    local index
+    if [[ "$UI_MODE" == help ]]; then
+        case "$KEY" in
+            '?'|ESC|q|Q)
+                UI_MODE=$HELP_RETURN_MODE
+                REDRAW_NEEDED=1
+                ;;
+        esac
+        return 0
+    fi
+    if [[ "$KEY" == '?' ]]; then
+        HELP_RETURN_MODE=$UI_MODE
+        UI_MODE=help
+        REDRAW_NEEDED=1
+        return 0
+    fi
+    if [[ "$QUICK_LAUNCH_ALT" == yes && "$KEY" == ALT_[1-9] &&
+          ( "$UI_MODE" == dashboard || "$UI_MODE" == menu ) ]]; then
+        index=$((9 + ${KEY#ALT_} - 1))
+        if ((index < ${#QUICK_NAMES[@]})); then
+            # Dashboard Alt shortcuts launch the expanded range without
+            # moving the ordinary dashboard selection; the full menu tracks
+            # the launched entry like its other direct-launch shortcuts.
+            if [[ "$UI_MODE" == menu ]]; then
+                SHELL_SELECTION=$index
+            fi
+            open_quick_window "$index" || true
+            REDRAW_NEEDED=1
+        fi
+        return 0
+    fi
+    return 1
+}
+
 read_key() {
     local first="" next="" timeout=${1:-0.1}
     local i
@@ -2409,7 +2821,11 @@ read_key() {
     fi
 
     if [[ "$next" != "[" && "$next" != "O" ]]; then
-        KEY="OTHER"
+        if [[ "$next" == [1-9] ]]; then
+            KEY="ALT_$next"
+        else
+            KEY="OTHER"
+        fi
         return 0
     fi
 
@@ -2770,7 +3186,10 @@ LOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/ssh-tunnel-wizard.XXXXXX") || {
     exit 1
 }
 
-printf '\033]0;SSH TUNNEL WIZARD\007'
+WINDOW_TITLE="TW✦ $CONFIG_NAME"
+encoded_window_title=$(printf '%s' "$WINDOW_TITLE" | base64 | tr -d '\r\n')
+printf '\033]0;%s\007' "$WINDOW_TITLE"
+printf '\033]1337;SetUserVar=SSH_WIZARD_TITLE=%s\007' "$encoded_window_title"
 
 if [[ -t 1 ]]; then
     printf '\033[?1049h\033[?25l'
@@ -2829,6 +3248,10 @@ while true; do
         request_restart
     fi
 
+    if handle_ui_key; then
+        continue
+    fi
+
     if [[ "$UI_MODE" == aliases ]]; then
         case "$KEY" in
             a|A) manage_alias add || true ;;
@@ -2879,6 +3302,10 @@ while true; do
         case "$KEY" in
             k|K)
                 kill_all_tunnels
+                ;;
+            n|N)
+                open_local_shell_window || true
+                REDRAW_NEEDED=1
                 ;;
             a|A)
                 UI_MODE=aliases

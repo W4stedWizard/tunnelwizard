@@ -1,4 +1,4 @@
-# Copy this file to ssh_config beside tunnels.sh to enable it.
+# Copy this file to ssh_config beside TW.sh to enable it.
 # OpenSSH client configuration reference:
 # https://man.openbsd.org/ssh_config
 #

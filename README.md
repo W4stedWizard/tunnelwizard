@@ -27,7 +27,8 @@ together in the resulting folder:
 ```text
 ssh-tunnel-wizard/
 ├── README.md
-├── tunnels.sh
+├── TW.sh
+├── TunnelWizard.ico       # Optional Windows shortcut icon
 ├── aliases-manager.sh   # Host-wide ~/.bashrc alias block management
 ├── hosts-manager.ps1     # Windows-only, on-demand hosts-file helper
 ├── tunnels.conf.example
@@ -47,37 +48,37 @@ Edit `tunnels.conf` with your hosts, usernames, forwards, and SSH key paths.
 Then start the wizard:
 
 ```bash
-bash ./tunnels.sh
+bash ./TW.sh
 ```
 
-Using `bash ./tunnels.sh` also works when extracting a ZIP has not preserved
+Using `bash ./TW.sh` also works when extracting a ZIP has not preserved
 the script's executable bit.
 
-**By default, the script reads `tunnels.conf` beside `tunnels.sh`.** You can
+**By default, the script reads `tunnels.conf` beside `TW.sh`.** You can
 launch the script from another directory and it will still find that config.
 
 To use a different config, pass its path explicitly:
 
 ```bash
-bash ./tunnels.sh /path/to/another.conf
+bash ./TW.sh /path/to/another.conf
 ```
 
 An explicitly supplied relative path is interpreted relative to your
 current working directory. If its name begins with `-`, put `--` before the
-path (after any options): `bash ./tunnels.sh -- ./-tunnels.conf`.
+path (after any options): `bash ./TW.sh -- ./-tunnels.conf`.
 
 To select a separate OpenSSH client config, pass `--ssh-config` (or its `-cssh`
 shorthand) with its path. It works before or after the optional TunnelWizard
 config path:
 
 ```bash
-bash ./tunnels.sh --ssh-config ~/.ssh/work.conf
-bash ./tunnels.sh /path/to/tunnels.conf -cssh ./ssh/proxmox.conf
+bash ./TW.sh --ssh-config ~/.ssh/work.conf
+bash ./TW.sh /path/to/tunnels.conf -cssh ./ssh/proxmox.conf
 ```
 
 The SSH config path is also interpreted relative to your current directory
 (and a `~/...` path is expanded from your home directory). The default remains
-`ssh_config` beside `tunnels.sh`, when that file exists.
+`ssh_config` beside `TW.sh`, when that file exists.
 
 > **Security:** The script sources its config as Bash code. Only use a
 > config file you trust.
@@ -89,7 +90,7 @@ cp ssh_config.example ssh_config
 ```
 
 `ssh_config` is optional and is automatically loaded for all tunnel and
-saved-shell SSH connections when it exists beside `tunnels.sh`; `--ssh-config`
+saved-shell SSH connections when it exists beside `TW.sh`; `--ssh-config`
 selects a different file for both. They use standard OpenSSH client
 configuration syntax. TunnelWizard supplies the tunnel's target, username,
 identity file, and port-forward options on the SSH command line; the custom
@@ -112,9 +113,14 @@ Define a machine followed by its tunnels:
 machine ALIAS SSH_HOST SSH_USER IDENTITY_FILE GROUP
 tunnel DISPLAY_NAME LOCAL_FORWARD [LOCAL_HOSTNAME]
 hosts_management no
+quick_launch_alt no
+name "Priv"
 ```
 
 Each `tunnel` belongs to the most recently declared `machine`.
+The optional `name` directive sets the terminal title to `TW✦ Priv`. Without
+it, TunnelWizard uses the config filename without its `.conf` suffix (for
+example, `priv.conf` becomes `TW✦ priv`).
 
 - `ALIAS`: descriptive machine name.
 - `SSH_HOST`: SSH server hostname or address.
@@ -222,8 +228,19 @@ quotes around labels or commands containing spaces or shell metacharacters.
 The config is sourced as Bash, so quote `$` and other expressions you want
 expanded **when the command runs**, not when the config loads. Entries appear
 in declaration order, mixing shells and commands in the first nine dashboard
-shortcuts and the complete `S` menu. Use 1–9, arrows and Enter as before;
-commands do not become tracked tunnel processes. See `tunnels.conf.example`.
+shortcuts and the complete `S` menu. Plain `1`–`9` open entries 1–9. Add
+`quick_launch_alt yes` to enable `Alt+1`–`Alt+9` for entries 10–18 (shown as
+`A1`–`A9` in the menu); the default is `no`. All later entries remain available
+with arrows and Enter in the full `S` menu. Terminal Alt+digit normally sends
+Escape followed by the digit; terminals that bind Alt+digits themselves may
+need that binding disabled. Ctrl+digit is not used because its legacy encodings
+can collide with control keys. Commands do not become tracked tunnel processes.
+See `tunnels.conf.example`.
+
+Press `?` on the dashboard, quick-launch menu, aliases page, or hosts page for
+shortcuts specific to that screen. Press `?`, Esc, or Q to close help and return
+to the same selection and scroll position. `Ctrl+R` restarts the tunnels and
+`Ctrl+C` exits from any page, including help.
 
 ### Host-wide Bash aliases
 
@@ -244,7 +261,7 @@ content inside the block, symlinked profiles and failed writes with a message;
 edit such a profile manually before retrying.
 
 Import (`I`) reads **`./bash-aliases.conf` from the directory where you launched
-TunnelWizard**, not from the directory containing `tunnels.sh`. Write (`W`)
+TunnelWizard**, not from the directory containing `TW.sh`. Write (`W`)
 exports the currently managed aliases to that same path. Both actions use
 canonical single-line Bash syntax, for example `alias op='echo hello'`; embedded
 single quotes use Bash's ` '\'' ` escaping (without the surrounding spaces).
@@ -279,6 +296,18 @@ session or local command in the wizard's current window and returns when it
 ends. Local commands run under interactive Bash and the new window waits for
 Enter after the command exits so output remains visible.
 
+Press `N` on the dashboard to open a local interactive shell whose `ssh`
+command uses the selected TunnelWizard SSH config. This works with the
+available terminal launchers on each supported platform; if no new-window
+launcher is available, TunnelWizard reports that rather than replacing the
+active dashboard. On Windows/Git Bash the new shell is launched from the
+Windows Bash executable path (rather than re-executing an MSYS `/bin/bash`
+path); exit that shell to close the new window.
+
+WezTerm's own `Ctrl+Shift+N` new-window shortcut does not inherit the SSH config
+selected by a running TunnelWizard session. Use TunnelWizard's `N` shortcut
+when you want a new shell with that session's SSH config.
+
 ## WezTerm configuration
 
 A custom WezTerm Lua config is optional. If you use one, you can keep
@@ -303,19 +332,26 @@ C:\Users\YourName\Projects\ssh-tunnel-wizard
 Then set **Target** to:
 
 ```text
-"C:\Program Files\WezTerm\wezterm-gui.exe" --config-file "tunnels.lua" start --cwd . -- "C:\Program Files\Git\bin\bash.exe" -c "bash ./tunnels.sh"
+"C:\Program Files\WezTerm\wezterm-gui.exe" --config-file "tunnels.lua" start --cwd . -- "C:\Program Files\Git\bin\bash.exe" -c "bash ./TW.sh"
 ```
 
 The project folder is entered only once, in **Start in**. `--cwd .` tells
 WezTerm to start the initial terminal in that folder, so the relative
-`tunnels.lua` and `bash ./tunnels.sh` paths resolve there. Adjust the WezTerm
+`tunnels.lua` and `bash ./TW.sh` paths resolve there. Adjust the WezTerm
 and Git Bash paths if they are installed elsewhere. This version assumes that
-`tunnels.lua` exists in the project folder.
+`tunnels.lua` exists in the project folder. Keep the `--` before the Git Bash
+executable; it separates WezTerm's options from the command to run. When your
+TunnelWizard config and SSH config are in a subfolder such as `sowa`, use this
+target instead (paths are relative to **Start in**):
+
+```text
+"C:\Program Files\WezTerm\wezterm-gui.exe" --config-file "tunnels.lua" start --cwd . -- "C:\Program Files\Git\bin\bash.exe" -c "bash ./TW.sh ./sowa/tunnels-sowa.conf -cssh ./sowa/sowa.ssh.conf"
+```
 
 Without a custom Lua config, use:
 
 ```text
-"C:\Program Files\WezTerm\wezterm-gui.exe" start --cwd . -- "C:\Program Files\Git\bin\bash.exe" -c "bash ./tunnels.sh"
+"C:\Program Files\WezTerm\wezterm-gui.exe" start --cwd . -- "C:\Program Files\Git\bin\bash.exe" -c "bash ./TW.sh"
 ```
 
 The shortcut starts the wizard **inside WezTerm**, so saved shells use
@@ -323,5 +359,8 @@ WezTerm's new-window behavior. If you instead start the wizard in another
 terminal, it uses the operating-system fallback described above.
 
 The **Start in** field supplies the working directory, so the shortcut can
-use `bash ./tunnels.sh` without a long path. Once started, the script locates
+use `bash ./TW.sh` without a long path. Once started, the script locates
 its default config beside itself.
+
+To use the included Windows shortcut icon, open the shortcut's **Properties**,
+choose **Change Icon**, and browse to `TunnelWizard.ico` in the project folder.

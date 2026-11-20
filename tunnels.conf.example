@@ -1,4 +1,4 @@
-# Copy this file to tunnels.conf in the same folder as tunnels.sh.
+# Copy this file to tunnels.conf in the same folder as TW.sh.
 # Replace the example hostnames, usernames, and forwards with your own.
 #
 # Syntax:
@@ -7,14 +7,21 @@
 #   shell   DISPLAY_NAME SSH_TARGET
 #   custom_command DISPLAY_NAME LOCAL_BASH_COMMAND
 #   hosts_management yes|no
+#   quick_launch_alt yes|no
+#   name DISPLAY_NAME (optional window-title name)
 #
 # GROUP=yes: forwards for this machine share one SSH process.
 # GROUP=no:  each forward gets its own SSH process.
 #
 # Leave private keys in ~/.ssh; do not copy them into this project folder.
+# Optional: show "TW✦ Priv" in the terminal title instead of using the config filename.
+# name "Priv"
 # Default off. Set to yes to expose the Windows hosts menu; it NEVER edits
 # the hosts file at startup. Use H, then A or R, preview and confirm manually.
 hosts_management no
+# Optional: Alt+1..Alt+9 open quick entries 10..18. Default is no;
+# plain 1..9 always open the first nine. Later entries remain in the S menu.
+quick_launch_alt no
 
 machine example-web web.example.invalid alice ~/.ssh/id_ed25519 no
 tunnel "Web application" 8080:127.0.0.1:80

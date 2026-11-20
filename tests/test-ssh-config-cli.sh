@@ -2,7 +2,7 @@
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-source <(awk '/^if \[\[ ! -r "\$CONFIG" \]\]; then/ { exit } { print }' "$root/tunnels.sh")
+source <(awk '/^if \[\[ ! -r "\$CONFIG" \]\]; then/ { exit } { print }' "$root/TW.sh")
 SCRIPT_DIR=$root
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -32,6 +32,18 @@ parse_cli_args -cssh "$custom" "$root/tunnels.conf"
 parse_cli_args "$root/tunnels.conf" -cssh="$custom"
 [[ "$CONFIG" == "$root/tunnels.conf" && "$SSH_CONFIG_FILE" == "$custom" ]] ||
     fail 'short SSH config equals form failed'
+
+mkdir -p "$tmp/sowa"
+printf '# sample tunnel config\n' >"$tmp/sowa/tunnels-sowa.conf"
+printf 'Host *\n    ServerAliveInterval 20\n' >"$tmp/sowa/sowa.ssh.conf"
+old_pwd=$PWD
+cd "$tmp"
+parse_cli_args ./sowa/tunnels-sowa.conf -cssh ./sowa/sowa.ssh.conf
+[[ "$CONFIG" == ./sowa/tunnels-sowa.conf &&
+   "$SSH_CONFIG_FILE" == "$tmp/./sowa/sowa.ssh.conf" ]] ||
+    fail 'relative subfolder config and SSH config paths were not retained/resolved'
+validate_ssh_config || fail 'relative subfolder SSH config did not validate'
+cd "$old_pwd"
 
 old_pwd=$PWD
 cd "$tmp"

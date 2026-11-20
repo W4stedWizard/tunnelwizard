@@ -2,12 +2,12 @@
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-source <(awk '$0 == "classify_host_key_failure() {" { copying=1 } copying { print; if ($0 == "}") exit }' "$root/tunnels.sh")
+source <(awk '$0 == "classify_host_key_failure() {" { copying=1 } copying { print; if ($0 == "}") exit }' "$root/TW.sh")
 source <(awk '
     /^open_host_key_verification_window\(\) \{/ { copying=1 }
     copying && /^open_command_in_current_window\(\) \{/ { exit }
     copying { print }
-' "$root/tunnels.sh")
+' "$root/TW.sh")
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 skip_terminal_subtests=0
@@ -62,7 +62,7 @@ encoded_identity=$(encode "$identity")
 encoded_label=$(encode "$label")
 export SSH_CAPTURE="$tmp/ssh-args"
 output="$tmp/verify-output"
-PATH="$tmp/bin:$PATH" bash "$root/tunnels.sh" \
+PATH="$tmp/bin:$PATH" bash "$root/TW.sh" \
     --verify-host-key-base64 "$encoded_host" "$encoded_user" "$encoded_identity" "$encoded_label" \
     --ssh-config-b64 "$encoded_config" > "$output" 2>&1 <<< ''
 
@@ -101,7 +101,7 @@ esac
 EOF
 chmod +x "$tmp/bin/wezterm"
 running_in_wezterm() { return 0; }
-SCRIPT_PATH="$root/tunnels.sh"
+SCRIPT_PATH="$root/TW.sh"
 SCRIPT_DIR="$root"
 declare -A SSH_HOST=([test-id]='verify.example.invalid')
 declare -A SSH_USER=([test-id]='verify-user')
@@ -136,7 +136,7 @@ grep -Fq 'Type exit to close this verification window.' "$WEZTERM_OUTPUT" ||
     fail 'WezTerm verification session did not leave a visible shell prompt'
 grep -Fxq "spawn --new-window --cwd $root" "$WEZTERM_SPAWN_ARGS" ||
     fail 'WezTerm did not create the popup in the TunnelWizard directory'
-expected_wezterm_command="exec bash ./tunnels.sh --verify-host-key-base64 $(encode 'verify.example.invalid') $(encode 'verify-user') $(encode "$tmp/verify key") $(encode 'Verify entry') --ssh-config-b64 -"
+expected_wezterm_command="exec bash ./TW.sh --verify-host-key-base64 $(encode 'verify.example.invalid') $(encode 'verify-user') $(encode "$tmp/verify key") $(encode 'Verify entry') --ssh-config-b64 -"
 grep -Fxq "$expected_wezterm_command" "$WEZTERM_COMMAND" ||
     fail 'WezTerm did not send the expected verification command to its default shell'
 grep -Fq 'send-text --pane-id test-pane-id --no-paste' "$WEZTERM_SEND_ARGS" ||

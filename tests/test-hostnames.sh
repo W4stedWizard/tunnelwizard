@@ -3,11 +3,18 @@ set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 # Load the configuration DSL without sourcing a config or opening the TUI.
-# The cut stops immediately before tunnels.sh's config-loading block.
-source <(awk '/^if \[\[ ! -r "\$CONFIG" \]\]; then/ { exit } { print }' "$root/tunnels.sh")
+# The cut stops immediately before TW.sh's config-loading block.
+source <(awk '/^if \[\[ ! -r "\$CONFIG" \]\]; then/ { exit } { print }' "$root/TW.sh")
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 [[ "$HOSTS_MANAGEMENT" == no ]] || fail 'hosts UI must be disabled by default'
+[[ "$CONFIG_NAME" == tunnels ]] || fail 'default window name is not derived from tunnels.conf'
+name 'Priv'
+[[ "$CONFIG_NAME" == Priv ]] || fail 'name directive did not set the window name'
+CONFIG_ERROR=0
+if name $'bad\033title' 2>/dev/null; then fail 'name accepted terminal control characters'; fi
+[[ $CONFIG_ERROR -eq 1 ]] || fail 'invalid name did not mark the config as erroneous'
+CONFIG_ERROR=0
 [[ $(local_host_ip pmx-one) == 127.105.144.115 ]] || fail 'address mapping changed unexpectedly'
 [[ $(local_host_ip pmx-one) == "$(local_host_ip PMX-ONE)" ]] || fail 'unstable address'
 [[ $(local_host_ip pmx-one) != "$(local_host_ip pmx-two)" ]] || fail 'sample hosts collide'
