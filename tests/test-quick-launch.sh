@@ -261,7 +261,7 @@ kill_all_tunnels
 
 mkdir -p "$test_home/bin"
 cat >"$test_home/bin/ssh" <<'EOF'
-#!/usr/bin/env bash
+#!/bin/sh
 printf '%s\n' "$@" >"$SSH_ARGS_LOG"
 EOF
 chmod +x "$test_home/bin/ssh"
