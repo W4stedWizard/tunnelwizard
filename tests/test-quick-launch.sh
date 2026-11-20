@@ -272,8 +272,8 @@ HOME="$test_home" PATH="$test_home/bin:$PATH" SSH_ARGS_LOG="$ssh_args_log" \
 [[ $(cat "$ssh_args_log") == $'-F\n'"$custom"$'\ntest.example.invalid' ]] ||
     fail 'interactive local-shell ssh function did not pass the selected -F config'
 
-# Simulate a Git Bash local-shell handoff on Linux. The PATH-resolved Bash
-# wrapper records the invocation and starts a real interactive Bash.
+# Simulate a Git Bash local-shell handoff on Linux with PATH-resolved Bash and
+# uname wrappers. The Bash wrapper records the invocation before delegating.
 real_bash=$(command -v bash)
 mkdir -p "$test_home/windows-bin"
 cat >"$test_home/windows-bin/bash" <<'EOF'
@@ -282,14 +282,16 @@ printf '%s\n' "$@" >"$FAKE_BASH_ARGS_LOG"
 exec "$REAL_BASH" "$@"
 EOF
 chmod +x "$test_home/windows-bin/bash"
-uname() { printf 'MINGW64_NT-10.0\n'; }
-export -f uname
+cat >"$test_home/windows-bin/uname" <<'EOF'
+#!/bin/sh
+printf 'MINGW64_NT-10.0\n'
+EOF
+chmod +x "$test_home/windows-bin/uname"
 REAL_BASH="$real_bash" \
 FAKE_BASH_ARGS_LOG="$test_home/windows-bash-args" \
 HOME="$test_home" PATH="$test_home/windows-bin:$test_home/bin:$PATH" SSH_ARGS_LOG="$ssh_args_log" \
     "$real_bash" "$root/TW.sh" --local-shell --ssh-config-b64 "$encoded_custom" \
     2>/dev/null <<< 'ssh windows.example.invalid; exit' >/dev/null
-unset -f uname
 [[ $(cat "$test_home/windows-bash-args") == -i ]] ||
     fail 'Windows local shell did not use PATH-resolved interactive Bash'
 [[ $(cat "$ssh_args_log") == $'-F\n'"$custom"$'\nwindows.example.invalid' ]] ||
