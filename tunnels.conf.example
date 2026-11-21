@@ -1,5 +1,6 @@
 # Copy this file to tunnels.conf in the same folder as TW.sh.
-# Replace the example hostnames, usernames, and forwards with your own.
+# This demo uses reserved example.invalid hosts and is not a working connection
+# profile. Replace hosts, usernames, and forwards with your own values.
 #
 # Syntax:
 #   machine ALIAS SSH_HOST SSH_USER IDENTITY_FILE GROUP
@@ -14,8 +15,8 @@
 # GROUP=no:  each forward gets its own SSH process.
 #
 # Leave private keys in ~/.ssh; do not copy them into this project folder.
-# Optional: show "TW✦ Priv" in the terminal title instead of using the config filename.
-# name "Priv"
+# Optional: set the terminal title; this sample appears as "TW✦ Demo".
+name "Demo"
 # Default off. Set to yes to expose the Windows hosts menu; it NEVER edits
 # the hosts file at startup. Use H, then A or R, preview and confirm manually.
 hosts_management no
@@ -23,28 +24,30 @@ hosts_management no
 # plain 1..9 always open the first nine. Later entries remain in the S menu.
 quick_launch_alt no
 
-machine example-web web.example.invalid alice ~/.ssh/id_ed25519 no
-tunnel "Web application" 8080:127.0.0.1:80
-tunnel "Web HTTPS"     8443:127.0.0.1:443
+# Dashboard demo: three tunnels, two configured local hostnames, and nine
+# quick-launch SSH shells. The .test names are config-only; no system DNS or
+# hosts-file entries are installed by this example.
+# Both local hostnames can use port 443 because each gets its own loopback IP;
+# binding ports below 1024 may require elevated privileges on some systems.
+machine demo-api api-gateway.example.invalid alice ~/.ssh/id_ed25519 no
+tunnel "API Gateway" 443:127.0.0.1:443 api.demo.test
 
-machine example-dev dev.example.invalid alice ~/.ssh/id_ed25519 yes
-tunnel "Dev dashboard" 9000:127.0.0.1:9000
-tunnel "Dev database"  15432:127.0.0.1:5432
+machine demo-console admin-console.example.invalid alice ~/.ssh/id_ed25519 no
+tunnel "Admin Console" 443:127.0.0.1:443 admin.demo.test
 
-# Example: two Proxmox machines can BOTH expose local port 443, because
-# each hostname receives its own deterministic 127.x.x.x bind address.
-# Uncomment and replace SSH hosts and username to use these:
-# machine proxmox-one pmx-one.example.invalid alice ~/.ssh/id_ed25519 no
-# tunnel "Proxmox one" 443:127.0.0.1:8006 pmx-one
-# machine proxmox-two pmx-two.example.invalid alice ~/.ssh/id_ed25519 no
-# tunnel "Proxmox two" 443:127.0.0.1:8006 pmx-two
-# After explicitly syncing in H, browse https://pmx-one and https://pmx-two.
-# For https://pmx-one:8006 instead, use 8006:127.0.0.1:8006 pmx-one.
+machine demo-metrics metrics-platform.example.invalid alice ~/.ssh/id_ed25519 no
+tunnel "Metrics" 9090:127.0.0.1:9090
 
 # Saved SSH shells and local Bash commands open in separate terminal windows
 # when a supported launcher is available. Their declaration order determines
 # the shared quick-launch grid; they need no machine or tunnel entry.
-shell "Web server"      alice@web.example.invalid
-shell "Development box" alice@dev.example.invalid
-# custom_command "Open project" 'cd ~/projects/demo && exec bash'
+shell "Production API Server"       alice@api-gateway.example.invalid
+shell "Web Frontend Services"       alice@web-frontend.example.invalid
+shell "Build and CI Runner"          alice@build.example.invalid
+shell "Primary Database"             alice@db.example.invalid
+shell "Metrics Dashboard"            alice@metrics.example.invalid
+shell "Staging Environment"          alice@staging.example.invalid
+shell "Production Gateway"           alice@prod.example.invalid
+shell "Application Logs"             alice@logs.example.invalid
+shell "Developer Workstation"        alice@dev.example.invalid
 # Host-wide aliases are managed separately with A in the UI (~/.bashrc).

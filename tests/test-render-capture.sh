@@ -59,6 +59,23 @@ render_indented_test_row() { printf '  UI row'; }
 paint_row 2 render_indented_test_row
 [[ "${ROW_CACHE[2]}" == ' UI row' ]] ||
     fail 'painted UI row was not shifted left by exactly one column'
+
+# Exercise the regular capture-file branch as well as the in-memory fallback.
+test_capture_file=$(command mktemp)
+trap 'rm -f -- "$test_capture_file"' EXIT
+RENDER_CAPTURE_FILE=$test_capture_file
+RENDER_CAPTURE_DISABLED=0
+render_file_test_row() { printf '  file row\n'; }
+paint_row 3 render_file_test_row
+[[ "${ROW_CACHE[3]}" == ' file row' && ${ROW_SEEN[3]} == 1 ]] ||
+    fail 'capture-file row was not shifted left by exactly one column'
+[[ $RENDER_CAPTURE_FILE == "$test_capture_file" && $RENDER_CAPTURE_DISABLED -eq 0 ]] ||
+    fail 'successful capture-file rendering unexpectedly disabled capture'
+[[ "$RENDER_BUFFER" == *'file row'* ]] || fail 'file-captured row was not queued for display'
+RENDER_CAPTURE_FILE=""
+rm -f -- "$test_capture_file"
+trap - EXIT
+
 shifted_ansi_row=$(shift_ui_line_left $'\033[1m  styled row\033[0m')
 [[ $shifted_ansi_row == $'\033[1m styled row\033[0m' ]] ||
     fail 'left shift did not preserve leading ANSI styling'
@@ -243,6 +260,18 @@ dashboard=$(render_dashboard)
 [[ $dashboard == *'_.,_'* ]] ||
     fail 'last-event message did not leave the hat visible with seven blank rows'
 MESSAGE=''
+
+# Non-positive gaps are rejected without emitting padding or hat rows.
+TERM_WIDTH=80
+BODY_ROW=12
+BODY_LAST_ROW=11
+hat_output=$(render_dashboard_gap_hat)
+[[ -z $hat_output && $BODY_ROW -eq 12 ]] ||
+    fail 'zero-row dashboard gap unexpectedly rendered the hat'
+BODY_LAST_ROW=10
+hat_output=$(render_dashboard_gap_hat)
+[[ -z $hat_output && $BODY_ROW -eq 12 ]] ||
+    fail 'negative-row dashboard gap unexpectedly rendered the hat'
 
 QUICK_NAMES=()
 for i in {1..18}; do QUICK_NAMES+=("Entry $i"); done

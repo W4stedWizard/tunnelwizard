@@ -808,14 +808,25 @@ render_arrow_hint() {
 }
 
 status_badge_palette() {
+    local palette
+
     case "$1" in
-        RUNNING)  printf '224 188 255 68 43 91' ;;
-        STARTING) printf '185 235 250 29 60 76' ;;
-        STOPPED)  printf '255 190 190 92 37 49' ;;
-        SKIPPED)  printf '255 222 165 89 67 36' ;;
-        PENDING)  printf '205 198 220 57 52 70' ;;
+        RUNNING)  palette='224 188 255|68 43 91' ;;
+        STARTING) palette='185 235 250|29 60 76' ;;
+        STOPPED)  palette='255 190 190|92 37 49' ;;
+        SKIPPED)  palette='255 222 165|89 67 36' ;;
+        PENDING)  palette='205 198 220|57 52 70' ;;
         *) return 1 ;;
     esac
+
+    if [[ ${2:-} == foreground ]]; then
+        # Foreground-only consumers, such as the status fade, need no
+        # background components.
+        printf '%s' "${palette%%|*}"
+    else
+        printf '%s' "${palette//|/ }"
+    fi
+    return 0
 }
 
 status_badge() {
@@ -1397,9 +1408,9 @@ render_tunnel_row() {
     local id=$1 label_width=$2 host_width=$3
     local host status=${STATUS[$id]} fade_width=0
 
-    # On wider terminals, let a purple circle fade lead directly into the
-    # status badge. Borrow two label-padding columns plus the normal separator
-    # so the badge stays aligned; keep the compact table untouched.
+    # On wider terminals, let a status-colored circle fade lead directly into
+    # the badge. Borrow two label-padding columns plus the normal separator so
+    # the badge stays aligned; keep the compact table untouched.
     ((TERM_WIDTH >= 72)) && fade_width=2
 
     host=$(truncate_text "${SSH_HOST[$id]}" "$host_width")
@@ -1417,12 +1428,12 @@ render_tunnel_row() {
 }
 
 render_status_bleed() {
-    local palette fg_r fg_g fg_b bg_r bg_g bg_b percent r g b
+    local palette fg_r fg_g fg_b percent r g b
     local status=$1
     local -a percentages=(35 65 90)
 
-    palette=$(status_badge_palette "$status") || return 0
-    read -r fg_r fg_g fg_b bg_r bg_g bg_b <<< "$palette"
+    palette=$(status_badge_palette "$status" foreground) || return 0
+    read -r fg_r fg_g fg_b <<< "$palette"
 
     for percent in "${percentages[@]}"; do
         r=$((fg_r * percent / 100))
