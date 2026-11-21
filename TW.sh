@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
+# Git Bash can be started explicitly even when Windows PATH omits its utility
+# directory. Keep this shell's own bin directory on PATH so core tools
+# (dirname, basename, uname, base64, and friends) remain available, without
+# changing which user-provided commands take precedence.
+if [[ ${BASH:-} == */* ]]; then
+    _tw_bash_dir=${BASH%/*}
+    PATH="${PATH:+$PATH:}$_tw_bash_dir"
+    export PATH
+    unset _tw_bash_dir
+fi
+
 # Find the script and its default config in the same directory.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
@@ -217,6 +228,75 @@ validate_ssh_config() {
     fi
 }
 
+print_local_shell_banner() {
+    local columns=${COLUMNS:-80} line_width path_width ssh_path ssh_parent ssh_name bash_rc
+    local ssh_label='SSH Config: ' bash_label='Bash rc: '
+    local art_color='' text_color='' message_color='' reset=''
+    local -a hat=(
+        '          _.,_'
+        "      .-\`'_.-'\`\`-'"
+        "    .' * /"
+        '   /  *  |'
+        '__/_______\__'
+    )
+    local -a details=()
+
+    ((columns >= 32)) || columns=32
+    line_width=$((columns - 20))
+
+    if [[ -t 2 && -z "${NO_COLOR:-}" && "${TERM:-}" != dumb ]]; then
+        art_color=$'\033[1;38;2;190;132;255m'
+        text_color=$'\033[2;38;2;221;205;239m'
+        message_color=$'\033[1;38;2;145;82;190m'
+        reset=$'\033[0m'
+    fi
+
+    details[0]='✓ Using current Bash'
+    if [[ "${WIZARD_SSH_CONFIG_ENABLED:-0}" == 1 ]]; then
+        ssh_path=$WIZARD_SSH_CONFIG_FILE
+        if [[ "$ssh_path" == */* ]]; then
+            ssh_parent=${ssh_path%/*}
+            ssh_parent=${ssh_parent##*/}
+            ssh_name=${ssh_path##*/}
+            if [[ -n "$ssh_parent" ]]; then
+                ssh_path="…/$ssh_parent/$ssh_name"
+            else
+                ssh_path="$ssh_name"
+            fi
+        fi
+        path_width=$((line_width - ${#ssh_label}))
+        if ((path_width > 1 && ${#ssh_path} > path_width)); then
+            ssh_path="…${ssh_path: -$((path_width - 1))}"
+        fi
+        details[1]="$ssh_label$ssh_path"
+    else
+        details[1]='SSH Config: default'
+    fi
+
+    bash_rc="${HOME:-}/.bashrc"
+    if [[ -n "${HOME:-}" && -f "$bash_rc" ]]; then
+        details[2]="${bash_label}~/.bashrc"
+    else
+        details[2]='Bash rc: not found'
+    fi
+    details[4]='Have a magical time ✧⋆｡˚'
+
+    local index detail detail_color
+    for index in "${!hat[@]}"; do
+        detail=${details[$index]:-}
+        if ((${#detail} > line_width)); then
+            detail="${detail:0:$((line_width - 1))}…"
+        fi
+        detail_color=$text_color
+        if ((index == 4)); then
+            detail_color=$message_color
+        fi
+        printf '%s%-18s%s  %s%s%s\n' \
+            "$art_color" "${hat[$index]}" "$reset" "$detail_color" \
+            "$detail" "$reset" >&2
+    done
+}
+
 parse_cli_args "$@" || exit $?
 if ((!COMMAND_MODE)); then validate_ssh_config || exit $?; fi
 
@@ -250,18 +330,15 @@ if ((LOCAL_SHELL_MODE)); then
     }
     export -f ssh
 
-    # Git Bash's $BASH can be /bin/bash. Use PATH lookup on Windows rather
-    # than passing that POSIX path through exec into a native terminal pane.
+    # Reuse the Bash executable that started TunnelWizard. On Windows, PATH
+    # may resolve `bash` to the WSL launcher rather than the current shell.
     local_shell_bash=$BASH
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
-            command -v bash >/dev/null 2>&1 || {
-                echo 'Cannot start the local shell: Bash is not available on PATH.' >&2
-                exit 1
-            }
-            # A command name lets Git Bash resolve and launch its native
-            # executable using its own PATH/MSYS runtime handling.
-            local_shell_bash=bash
+            path_bash=$(type -P bash 2>/dev/null || true)
+            if [[ -n "$path_bash" && "$path_bash" != "$BASH" ]]; then
+                print_local_shell_banner
+            fi
             ;;
     esac
 
@@ -1126,9 +1203,7 @@ render_dashboard_shell_controls() {
            ((TERM_WIDTH > shown_width + ${#alt_hint})); then
             key_hint '  Alt+1–9'
             printf ' Open 10–18'
-            shown_width=$((shown_width + ${#alt_hint}))
         fi
-        render_footer_help_hint "$shown_width"
     else
         printf '  '
         if ((TERM_WIDTH <= ${#compact} + 1)); then
@@ -1137,7 +1212,6 @@ render_dashboard_shell_controls() {
             key_hint '↑↓←→'
             printf ' '
             key_hint 'Enter'
-            render_footer_help_hint 18
         else
             key_hint '1–9'
             printf ' Open '
@@ -1145,7 +1219,6 @@ render_dashboard_shell_controls() {
             printf ' Move '
             key_hint 'Enter'
             printf ' Open'
-            render_footer_help_hint "${#compact}"
         fi
     fi
 }
@@ -1312,7 +1385,9 @@ render_shell_cell() {
     local marker=' ' hotkey=' ' name name_width padded_name prefix
 
     if ((index == SHELL_SELECTION)); then
-        marker='›'
+        # Keep the selected marker unambiguously one terminal column wide;
+        # Unicode width for the previous chevron varies by terminal/locale.
+        marker='>'
     fi
 
     if ((index < 9)); then
@@ -2303,16 +2378,36 @@ running_in_wezterm() {
     [[ -n "${WEZTERM_PANE:-}" || "${TERM_PROGRAM:-}" == WezTerm ]]
 }
 
+# Git for Windows normally keeps cygpath beside Bash. It may be absent from
+# PATH even though the current shell and its path converter are installed.
+find_cygpath() {
+    local bash_path=${1:-$BASH} candidate bash_dir
+    bash_dir=${bash_path%/*}
+
+    if candidate=$(command -v cygpath 2>/dev/null) && [[ -n "$candidate" ]]; then
+        printf '%s' "$candidate"
+        return 0
+    fi
+
+    for candidate in "$bash_dir/cygpath.exe" "$bash_dir/cygpath"; do
+        if [[ -x "$candidate" ]]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 # Convert a filesystem path for the native Windows WezTerm client. On
 # non-Windows shells the path is returned unchanged; on Git Bash/MSYS/Cygwin
-# the Windows client cannot resolve POSIX paths, so a missing, failing, or
-# empty cygpath conversion must fail rather than pass the path through.
+# conversion must succeed rather than pass an unusable POSIX path through.
 to_windows_path() {
-    local path=$1 converted
+    local path=$1 converted cygpath_bin
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
-            if ! command -v cygpath >/dev/null 2>&1 ||
-               ! converted=$(cygpath -w "$path") ||
+            if ! cygpath_bin=$(find_cygpath) ||
+               ! converted=$("$cygpath_bin" -w "$path") ||
                [[ -z "$converted" ]]; then
                 echo "Cannot convert path for the Windows WezTerm client: $path" >&2
                 return 1
@@ -2368,7 +2463,7 @@ open_shell_window() {
     local index=$1
     local target=${SHELL_TARGETS[$index]}
     local name=${SHELL_NAMES[$index]}
-    local wezterm_bin bash_bin bash_win workdir_win
+    local wezterm_bin bash_bin bash_win workdir_win cygpath_bin
     local encoded_title encoded_target encoded_ssh_config=-
 
     if ((SSH_CONFIG_EXPLICIT)); then
@@ -2378,7 +2473,7 @@ open_shell_window() {
     # Keep the original WezTerm behavior when running inside WezTerm.
     if running_in_wezterm && command -v wezterm >/dev/null 2>&1; then
         wezterm_bin=$(command -v wezterm)
-        bash_bin=$(command -v bash)
+        bash_bin=$BASH
 
         encoded_title=$(printf '%s' "$name" | base64 | tr -d '\r\n')
 
@@ -2407,17 +2502,15 @@ open_shell_window() {
             # Launch Git Bash as a console program. Windows uses its
             # configured default console terminal host for the window.
             if command -v powershell.exe >/dev/null 2>&1 &&
-               command -v cygpath >/dev/null 2>&1; then
-                bash_bin=$(command -v bash)
-                bash_win=$(cygpath -w "$bash_bin")
-                workdir_win=$(cygpath -w "$SCRIPT_DIR")
-
+               cygpath_bin=$(find_cygpath) &&
+               bash_win=$("$cygpath_bin" -w "$BASH") &&
+               workdir_win=$("$cygpath_bin" -w "$SCRIPT_DIR"); then
                 if WIZARD_BASH_EXE="$bash_win" \
                    WIZARD_WORKDIR="$workdir_win" \
                    WIZARD_TARGET_B64="$encoded_target" \
                    WIZARD_SSH_CONFIG_B64="$encoded_ssh_config" \
                    powershell.exe -NoProfile -NonInteractive -Command \
-                   'try { $launchArgs = "-c `"exec bash ./TW.sh --connect-base64 " + $env:WIZARD_TARGET_B64 + " --ssh-config-b64 " + $env:WIZARD_SSH_CONFIG_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
+                   'try { $launchArgs = "-c `"exec `$BASH ./TW.sh --connect-base64 " + $env:WIZARD_TARGET_B64 + " --ssh-config-b64 " + $env:WIZARD_SSH_CONFIG_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
                    </dev/null >/dev/null 2>&1; then
                     MESSAGE="Opened '$name' in new window."
                     return 0
@@ -2469,36 +2562,33 @@ open_shell_window() {
 }
 
 open_local_shell_window() {
-    local wezterm_bin bash_bin bash_win workdir_win wezterm_workdir
-    local pane_id local_shell_command
+    local wezterm_bin bash_bin bash_win workdir_win wezterm_workdir cygpath_bin
+    local pane_id local_shell_command encoded_title
     local encoded_ssh_config=-
 
     if ((SSH_CONFIG_EXPLICIT)); then
         encoded_ssh_config=$(printf '%s' "$SSH_CONFIG_FILE" | base64 | tr -d '\r\n')
     fi
+    encoded_title=$(printf '%s' '✦ Bash' | base64 | tr -d '\r\n')
 
     if running_in_wezterm && command -v wezterm >/dev/null 2>&1; then
         wezterm_bin=$(command -v wezterm)
-        bash_bin=$(command -v bash)
+        bash_bin=$BASH
         wezterm_workdir=$SCRIPT_DIR
         if bash_bin=$(to_windows_path "$bash_bin") &&
            wezterm_workdir=$(to_windows_path "$SCRIPT_DIR"); then
-            # Keep an interactive Bash as the pane's foreground process.
-            # Running TW.sh as the initial process can close the pane when
-            # its child shell exits or inherits detached stdio from the
-            # CLI launcher.
+            # Run startup code through Bash -c instead of typing it into the
+            # pane; this keeps the command and the OSC title update invisible.
+            local_shell_command="printf '\\033]1337;SetUserVar=SSH_WIZARD_TITLE=%s\\007' '$encoded_title'; exec \"\$BASH\" ./TW.sh --local-shell --ssh-config-b64 $encoded_ssh_config"
             if pane_id=$(spawn_wezterm "$wezterm_bin" --cwd "$wezterm_workdir" -- \
-                "$bash_bin" -i </dev/null 2>/dev/null); then
+                "$bash_bin" -i -c "$local_shell_command" </dev/null 2>/dev/null); then
                 pane_id=${pane_id//$'\r'/}
-                local_shell_command="bash ./TW.sh --local-shell --ssh-config-b64 $encoded_ssh_config"$'\n'
-                if "$wezterm_bin" cli send-text --pane-id "$pane_id" --no-paste \
-                    "$local_shell_command" >/dev/null 2>&1; then
-                    MESSAGE='Opened a local shell with the selected SSH config.'
-                    return 0
-                fi
-
-                MESSAGE='Opened a terminal, but could not start the TunnelWizard-configured shell.'
-                return 1
+                # The user variable drives tunnels.lua's window-title hook;
+                # the explicit tab title covers configurations with a tab bar.
+                "$wezterm_bin" cli set-tab-title --pane-id "$pane_id" '✦ Bash' \
+                    >/dev/null 2>&1 || true
+                MESSAGE='Opened a local shell with the selected SSH config.'
+                return 0
             fi
         fi
         # A failed path conversion skips the WezTerm launch and continues to
@@ -2508,16 +2598,14 @@ open_local_shell_window() {
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
             if command -v powershell.exe >/dev/null 2>&1 &&
-               command -v cygpath >/dev/null 2>&1; then
-                bash_bin=$(command -v bash)
-                bash_win=$(cygpath -w "$bash_bin")
-                workdir_win=$(cygpath -w "$SCRIPT_DIR")
-
+               cygpath_bin=$(find_cygpath) &&
+               bash_win=$("$cygpath_bin" -w "$BASH") &&
+               workdir_win=$("$cygpath_bin" -w "$SCRIPT_DIR"); then
                 if WIZARD_BASH_EXE="$bash_win" \
                    WIZARD_WORKDIR="$workdir_win" \
                    WIZARD_SSH_CONFIG_B64="$encoded_ssh_config" \
                    powershell.exe -NoProfile -NonInteractive -Command \
-                   'try { $launchArgs = "-c `"exec bash ./TW.sh --local-shell --ssh-config-b64 " + $env:WIZARD_SSH_CONFIG_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
+                   'try { $launchArgs = "-c `"exec `$BASH ./TW.sh --local-shell --ssh-config-b64 " + $env:WIZARD_SSH_CONFIG_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
                    </dev/null >/dev/null 2>&1; then
                     MESSAGE='Opened a local shell with the selected SSH config.'
                     return 0
@@ -2566,7 +2654,7 @@ open_host_key_verification_window() {
     local identity=${IDENTITY[$1]} name=${LABEL[$1]}
     local encoded_host encoded_user encoded_identity encoded_name
     local encoded_ssh_config=- pane_id verify_command
-    local wezterm_workdir
+    local wezterm_workdir cygpath_bin bash_win workdir_win
 
     encoded_host=$(printf '%s' "$host" | base64 | tr -d '\r\n')
     encoded_user=$(printf '%s' "$user" | base64 | tr -d '\r\n')
@@ -2584,7 +2672,8 @@ open_host_key_verification_window() {
             if pane_id=$(spawn_wezterm wezterm --cwd "$wezterm_workdir" \
                 </dev/null 2>/dev/null); then
                 pane_id=${pane_id//$'\r'/}
-                verify_command="exec bash ./TW.sh --verify-host-key-base64 $encoded_host $encoded_user $encoded_identity $encoded_name --ssh-config-b64 $encoded_ssh_config"$'\n'
+                verify_command='exec "$BASH" ./TW.sh --verify-host-key-base64 '
+                verify_command+="$encoded_host $encoded_user $encoded_identity $encoded_name --ssh-config-b64 $encoded_ssh_config"$'\n'
                 if wezterm cli send-text --pane-id "$pane_id" --no-paste \
                     "$verify_command" >/dev/null 2>&1; then
                     return 0
@@ -2598,11 +2687,9 @@ open_host_key_verification_window() {
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
             if command -v powershell.exe >/dev/null 2>&1 &&
-               command -v cygpath >/dev/null 2>&1; then
-                bash_bin=$(command -v bash)
-                bash_win=$(cygpath -w "$bash_bin")
-                workdir_win=$(cygpath -w "$SCRIPT_DIR")
-
+               cygpath_bin=$(find_cygpath) &&
+               bash_win=$("$cygpath_bin" -w "$BASH") &&
+               workdir_win=$("$cygpath_bin" -w "$SCRIPT_DIR"); then
                 if WIZARD_BASH_EXE="$bash_win" \
                    WIZARD_WORKDIR="$workdir_win" \
                    WIZARD_TARGET_B64="$encoded_host" \
@@ -2611,7 +2698,7 @@ open_host_key_verification_window() {
                    WIZARD_LABEL_B64="$encoded_name" \
                    WIZARD_SSH_CONFIG_B64="$encoded_ssh_config" \
                    powershell.exe -NoProfile -NonInteractive -Command \
-                   'try { $launchArgs = "-c `"bash ./TW.sh --verify-host-key-base64 " + $env:WIZARD_TARGET_B64 + " " + $env:WIZARD_USER_B64 + " " + $env:WIZARD_IDENTITY_B64 + " " + $env:WIZARD_LABEL_B64 + " --ssh-config-b64 " + $env:WIZARD_SSH_CONFIG_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
+                    'try { $launchArgs = "-c `"exec `$BASH ./TW.sh --verify-host-key-base64 " + $env:WIZARD_TARGET_B64 + " " + $env:WIZARD_USER_B64 + " " + $env:WIZARD_IDENTITY_B64 + " " + $env:WIZARD_LABEL_B64 + " --ssh-config-b64 " + $env:WIZARD_SSH_CONFIG_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
                    </dev/null >/dev/null 2>&1; then
                     return 0
                 fi
@@ -2658,7 +2745,7 @@ open_command_in_current_window() {
     restore_tty_mode
     printf '\033[?25h\033[H\033[J'
     printf 'Local command: %s\n\n' "$name"
-    bash -ic "$value" <&3
+    "$BASH" -ic "$value" <&3
     command_status=$?
     printf '\nCommand ended (exit status %s).\n' "$command_status"
     read -r -p 'Press Enter to return to the wizard... ' _ <&3 || true
@@ -2674,12 +2761,12 @@ open_command_in_current_window() {
 
 open_command_window() {
     local index=$1 name=${QUICK_NAMES[$index]} value=${QUICK_VALUES[$index]}
-    local encoded bash_bin bash_win workdir_win wezterm_bin script_win
+    local encoded bash_bin bash_win workdir_win wezterm_bin script_win cygpath_bin
     encoded=$(printf '%s' "$value" | base64 | tr -d '\r\n')
 
     if running_in_wezterm && command -v wezterm >/dev/null 2>&1; then
         wezterm_bin=$(command -v wezterm)
-        bash_bin=$(command -v bash)
+        bash_bin=$BASH
         if ! bash_bin=$(to_windows_path "$bash_bin") ||
            ! workdir_win=$(to_windows_path "$HOME") ||
            ! script_win=$(to_windows_path "$SCRIPT_PATH"); then
@@ -2696,14 +2783,13 @@ open_command_window() {
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
             if command -v powershell.exe >/dev/null 2>&1 &&
-               command -v cygpath >/dev/null 2>&1; then
-                bash_bin=$(command -v bash)
-                bash_win=$(cygpath -w "$bash_bin")
-                workdir_win=$(cygpath -w "$SCRIPT_DIR")
+               cygpath_bin=$(find_cygpath) &&
+               bash_win=$("$cygpath_bin" -w "$BASH") &&
+               workdir_win=$("$cygpath_bin" -w "$SCRIPT_DIR"); then
                 if WIZARD_BASH_EXE="$bash_win" WIZARD_WORKDIR="$workdir_win" \
                    WIZARD_COMMAND_B64="$encoded" \
                    powershell.exe -NoProfile -NonInteractive -Command \
-                   'try { $launchArgs = "-c `"exec bash ./TW.sh --run-command-base64 " + $env:WIZARD_COMMAND_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
+                   'try { $launchArgs = "-c `"exec `$BASH ./TW.sh --run-command-base64 " + $env:WIZARD_COMMAND_B64 + "`""; Start-Process -FilePath $env:WIZARD_BASH_EXE -WorkingDirectory $env:WIZARD_WORKDIR -ArgumentList $launchArgs -ErrorAction Stop } catch { exit 1 }' \
                    </dev/null >/dev/null 2>&1; then
                     MESSAGE="Opened '$name' in new window."
                     return 0

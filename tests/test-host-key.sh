@@ -3,6 +3,12 @@ set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 source <(awk '$0 == "classify_host_key_failure() {" { copying=1 } copying { print; if ($0 == "}") exit }' "$root/TW.sh")
+load_function() {
+    source <(awk -v name="$1" '$0 == name "() {" { copying=1 } copying { print; if ($0 == "}") exit }' "$root/TW.sh")
+}
+for fn in is_windows_shell find_cygpath to_windows_path spawn_wezterm; do
+    load_function "$fn"
+done
 source <(awk '
     /^open_host_key_verification_window\(\) \{/ { copying=1 }
     copying && /^open_command_in_current_window\(\) \{/ { exit }
@@ -136,7 +142,8 @@ grep -Fq 'Type exit to close this verification window.' "$WEZTERM_OUTPUT" ||
     fail 'WezTerm verification session did not leave a visible shell prompt'
 grep -Fxq "spawn --new-window --cwd $root" "$WEZTERM_SPAWN_ARGS" ||
     fail 'WezTerm did not create the popup in the TunnelWizard directory'
-expected_wezterm_command="exec bash ./TW.sh --verify-host-key-base64 $(encode 'verify.example.invalid') $(encode 'verify-user') $(encode "$tmp/verify key") $(encode 'Verify entry') --ssh-config-b64 -"
+expected_wezterm_command='exec "$BASH" ./TW.sh --verify-host-key-base64 '
+expected_wezterm_command+="$(encode 'verify.example.invalid') $(encode 'verify-user') $(encode "$tmp/verify key") $(encode 'Verify entry') --ssh-config-b64 -"
 grep -Fxq "$expected_wezterm_command" "$WEZTERM_COMMAND" ||
     fail 'WezTerm did not send the expected verification command to its default shell'
 grep -Fq 'send-text --pane-id test-pane-id --no-paste' "$WEZTERM_SEND_ARGS" ||

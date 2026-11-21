@@ -16,9 +16,11 @@ load_function stop_tunnels
 load_function kill_all_tunnels
 load_function running_in_wezterm
 load_function is_windows_shell
+load_function find_cygpath
 load_function to_windows_path
 load_function spawn_wezterm
 load_function open_local_shell_window
+load_function print_local_shell_banner
 load_function handle_ui_key
 load_function read_key
 SCRIPT_DIR=$root
@@ -28,6 +30,21 @@ test_home=$(mktemp -d)
 trap 'rm -rf -- "$test_home"' EXIT
 custom="$test_home/custom ssh_config"
 printf 'Host *\n    ServerAliveInterval 15\n' >"$custom"
+
+# Git Bash may not have its standard /usr/bin directory on PATH even though
+# the current Bash and its sibling cygpath.exe are present.
+fake_git_bin="$test_home/fake-git/usr/bin"
+empty_path="$test_home/empty-path"
+mkdir -p "$fake_git_bin" "$empty_path"
+touch "$fake_git_bin/bash"
+cat >"$fake_git_bin/cygpath.exe" <<'EOF'
+#!/bin/sh
+printf 'C:\\Git\\usr\\bin\\bash\n'
+EOF
+chmod +x "$fake_git_bin/bash" "$fake_git_bin/cygpath.exe"
+sibling_cygpath=$(PATH="$empty_path" find_cygpath "$fake_git_bin/bash")
+[[ "$sibling_cygpath" == "$fake_git_bin/cygpath.exe" ]] ||
+    fail 'cygpath beside the running Bash was not found when absent from PATH'
 
 shell 'SSH one' one.example.invalid
 custom_command 'Local one' 'printf "%s" "$HOME"; echo done'
@@ -128,6 +145,7 @@ if parse_cli_args --connect-base64 ZWNobyBoZWxsbw== --run-command-base64 ZWNobyB
     fail 'SSH connect mode and local command mode were both accepted'
 fi
 encoded_custom=$(printf '%s' "$custom" | base64 | tr -d '\r\n')
+encoded_bash_title=$(printf '%s' '✦ Bash' | base64 | tr -d '\r\n')
 parse_cli_args --local-shell --ssh-config-b64 "$encoded_custom"
 [[ $LOCAL_SHELL_MODE -eq 1 && $SSH_CONFIG_EXPLICIT -eq 1 &&
    "$SSH_CONFIG_FILE" == "$custom" ]] || fail 'local shell did not accept its selected SSH config'
@@ -143,60 +161,73 @@ fi
 
 mkdir -p "$test_home/bin"
 cat >"$test_home/bin/wezterm" <<'EOF'
-#!/usr/bin/env bash
+#!/bin/bash
 if [[ $1 == cli && $2 == spawn ]]; then
     printf '%s\0' "$@" >"$WEZTERM_SPAWN_LOG"
     printf 'pane-mock\n'
-elif [[ $1 == cli && $2 == send-text ]]; then
-    printf '%s\0' "$@" >"$WEZTERM_ARGS_LOG"
+elif [[ $1 == cli && $2 == set-tab-title ]]; then
+    printf '%s\0' "$@" >>"$WEZTERM_TITLE_LOG"
 fi
 EOF
 chmod +x "$test_home/bin/wezterm"
-wezterm_args_log="$test_home/wezterm-args"
 wezterm_spawn_log="$test_home/wezterm-spawn"
+wezterm_title_log="$test_home/wezterm-title"
 SCRIPT_PATH="$root/TW.sh"
 SSH_CONFIG_FILE=$custom
 SSH_CONFIG_EXPLICIT=1
 HOME=$test_home
-expected_bash=$(command -v bash)
+expected_bash=$BASH
 if command -v cygpath >/dev/null 2>&1; then
     expected_bash=$(cygpath -w "$expected_bash")
 fi
 export PATH="$test_home/bin:$PATH" WEZTERM_PANE=mock \
-    WEZTERM_ARGS_LOG="$wezterm_args_log" WEZTERM_SPAWN_LOG="$wezterm_spawn_log"
+    WEZTERM_SPAWN_LOG="$wezterm_spawn_log" WEZTERM_TITLE_LOG="$wezterm_title_log"
 open_local_shell_window || fail 'N did not launch a local shell in WezTerm'
 unset WEZTERM_PANE
-wezterm_args=()
-while IFS= read -r -d '' arg; do wezterm_args+=("$arg"); done <"$wezterm_args_log"
 wezterm_spawn_args=()
 while IFS= read -r -d '' arg; do wezterm_spawn_args+=("$arg"); done <"$wezterm_spawn_log"
+expected_local_shell_command="printf '\\033]1337;SetUserVar=SSH_WIZARD_TITLE=%s\\007' '$encoded_bash_title'; exec \"\$BASH\" ./TW.sh --local-shell --ssh-config-b64 $encoded_custom"
 [[ " ${wezterm_spawn_args[*]} " == *" --cwd $root "* &&
-   " ${wezterm_spawn_args[*]} " == *" -- $expected_bash -i "* &&
-   " ${wezterm_args[*]} " == *" --no-paste bash ./TW.sh --local-shell --ssh-config-b64 $encoded_custom"* ]] ||
+   " ${wezterm_spawn_args[*]} " == *" -- $expected_bash -i -c $expected_local_shell_command"* ]] ||
     fail 'WezTerm N launcher lost the project root, interactive shell, or selected SSH config'
 [[ " ${wezterm_spawn_args[*]} " != *"--domain-name "* ]] ||
     fail 'WezTerm N launcher requested a domain on a non-Windows shell'
+wezterm_titles=()
+while IFS= read -r -d '' arg; do wezterm_titles+=("$arg"); done <"$wezterm_title_log"
+[[ " ${wezterm_titles[*]} " == *'set-tab-title --pane-id pane-mock ✦ Bash'* &&
+   " ${wezterm_spawn_args[*]} " == *"SetUserVar=SSH_WIZARD_TITLE=%s"* &&
+   " ${wezterm_spawn_args[*]} " == *"'$encoded_bash_title'"* ]] ||
+    fail 'WezTerm N launcher did not set the local shell window title to ✦ Bash'
 
 # Simulate Git Bash on Linux for the WezTerm N path; the in-process cygpath
 # maps the real bash executable to the mock Windows launcher and rewrites the
 # project root into fake Windows drive form.
 fake_root_win="C:${root//\//\\}"
 fake_bash_win="C:${expected_bash//\//\\}"
+wsl_bash_log="$test_home/wsl-bash-args"
+mkdir -p "$test_home/windows-bin"
+cat >"$test_home/windows-bin/bash" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >"$WSL_BASH_ARGS_LOG"
+exit 127
+EOF
+chmod +x "$test_home/windows-bin/bash"
 cat >"$test_home/bin/cygpath" <<'EOF'
-#!/usr/bin/env bash
-[[ $1 == -w ]] || exit 1
-if [[ $2 == "$BASH_PATH" ]]; then printf '%s\n' "$FAKE_BASH_EXE"; else printf '%s\n' "${FAKE_ROOT_WIN}"; fi
+#!/bin/sh
+[ "$1" = -w ] || exit 1
+if [ "$2" = "$BASH_PATH" ]; then printf '%s\n' "$FAKE_BASH_EXE"; else printf '%s\n' "$FAKE_ROOT_WIN"; fi
 EOF
 chmod +x "$test_home/bin/cygpath"
 uname() { printf 'MINGW64_NT-10.0\n'; }
 export -f uname
 export WEZTERM_PANE=mock
 : >"$wezterm_spawn_log"
-: >"$wezterm_args_log"
 BASH_PATH="$expected_bash" FAKE_BASH_EXE="$fake_bash_win" FAKE_ROOT_WIN="$fake_root_win" \
+WSL_BASH_ARGS_LOG="$wsl_bash_log" PATH="$test_home/windows-bin:$test_home/bin:$PATH" \
     open_local_shell_window || fail 'N did not launch a local shell in WezTerm on Git Bash'
 unset -f uname
 unset WEZTERM_PANE
+[[ ! -e "$wsl_bash_log" ]] || fail 'N used the WSL bash shim instead of the running Git Bash'
 wezterm_spawn_args=()
 while IFS= read -r -d '' arg; do wezterm_spawn_args+=("$arg"); done <"$wezterm_spawn_log"
 [[ " ${wezterm_spawn_args[*]} " == *" --cwd $fake_root_win "* &&
@@ -206,10 +237,8 @@ while IFS= read -r -d '' arg; do wezterm_spawn_args+=("$arg"); done <"$wezterm_s
 [[ " ${wezterm_spawn_args[*]} " != *" $root "* &&
    " ${wezterm_spawn_args[*]} " != *" $expected_bash "* ]] ||
     fail 'WezTerm N launcher passed unconverted POSIX paths on Git Bash'
-wezterm_args=()
-while IFS= read -r -d '' arg; do wezterm_args+=("$arg"); done <"$wezterm_args_log"
-[[ " ${wezterm_args[*]} " == *" --no-paste bash ./TW.sh --local-shell --ssh-config-b64 $encoded_custom"* ]] ||
-    fail 'WezTerm N launcher lost the selected SSH config send-text on Git Bash'
+[[ " ${wezterm_spawn_args[*]} " == *" -- $fake_bash_win -i -c $expected_local_shell_command"* ]] ||
+    fail 'WezTerm N launcher lost the selected SSH config in its Git Bash startup command'
 
 # A failing or missing cygpath must make N fall through without spawning a
 # WezTerm pane with POSIX paths.
@@ -222,7 +251,6 @@ uname() { printf 'MINGW64_NT-10.0\n'; }
 export -f uname
 export WEZTERM_PANE=mock
 : >"$wezterm_spawn_log"
-: >"$wezterm_args_log"
 if open_local_shell_window 2>/dev/null; then fail 'N did not fail closed when cygpath fails on Git Bash'; fi
 unset -f uname
 unset WEZTERM_PANE
@@ -272,14 +300,26 @@ HOME="$test_home" PATH="$test_home/bin:$PATH" SSH_ARGS_LOG="$ssh_args_log" \
 [[ $(cat "$ssh_args_log") == $'-F\n'"$custom"$'\ntest.example.invalid' ]] ||
     fail 'interactive local-shell ssh function did not pass the selected -F config'
 
-# Simulate a Git Bash local-shell handoff on Linux with PATH-resolved Bash and
-# uname wrappers. The Bash wrapper records the invocation before delegating.
+# The N window can inherit a Windows PATH that omits Git Bash's utility
+# directory. TW.sh must restore the running Bash's own bin directory before
+# the first dirname/base64/uname lookup.
+minimal_path_output="$test_home/minimal-path-output"
+HOME="$test_home" PATH="$empty_path" \
+    "$BASH" "$root/TW.sh" --local-shell --ssh-config-b64 "$encoded_custom" \
+    >"$minimal_path_output" 2>&1 <<< 'exit' ||
+    fail 'local shell failed when PATH omitted Git Bash utility commands'
+if grep -Eq 'command not found|Invalid encoded SSH config path' "$minimal_path_output"; then
+    fail 'local shell did not restore its Bash utility directory before startup'
+fi
+
+# Simulate Git Bash on Linux with a WSL-style `bash` shim first on PATH. The
+# local shell must reuse its running Bash instead of invoking that shim.
 real_bash=$(command -v bash)
 mkdir -p "$test_home/windows-bin"
 cat >"$test_home/windows-bin/bash" <<'EOF'
-#!/bin/bash
-printf '%s\n' "$@" >"$FAKE_BASH_ARGS_LOG"
-exec "$REAL_BASH" "$@"
+#!/bin/sh
+printf '%s\n' "$@" >"$WSL_BASH_ARGS_LOG"
+exit 127
 EOF
 chmod +x "$test_home/windows-bin/bash"
 cat >"$test_home/windows-bin/uname" <<'EOF'
@@ -287,13 +327,23 @@ cat >"$test_home/windows-bin/uname" <<'EOF'
 printf 'MINGW64_NT-10.0\n'
 EOF
 chmod +x "$test_home/windows-bin/uname"
-REAL_BASH="$real_bash" \
-FAKE_BASH_ARGS_LOG="$test_home/windows-bash-args" \
+: >"$test_home/.bashrc"
+WSL_BASH_ARGS_LOG="$test_home/wsl-bash-args" \
 HOME="$test_home" PATH="$test_home/windows-bin:$test_home/bin:$PATH" SSH_ARGS_LOG="$ssh_args_log" \
     "$real_bash" "$root/TW.sh" --local-shell --ssh-config-b64 "$encoded_custom" \
-    2>/dev/null <<< 'ssh windows.example.invalid; exit' >/dev/null
-[[ $(cat "$test_home/windows-bash-args") == -i ]] ||
-    fail 'Windows local shell did not use PATH-resolved interactive Bash'
+    2>"$test_home/windows-shell-warning" <<< 'ssh windows.example.invalid; exit' >/dev/null ||
+    fail 'Windows local shell failed to reuse the running Bash'
+[[ ! -e "$test_home/wsl-bash-args" ]] ||
+    fail 'Windows local shell invoked the PATH-resolved WSL bash shim'
+shell_banner=$(cat "$test_home/windows-shell-warning")
+[[ $shell_banner == *'✓ Using current Bash'* &&
+   $shell_banner == *"SSH Config: …/${test_home##*/}/custom ssh_config"* &&
+   $shell_banner == *'Bash rc: ~/.bashrc'* &&
+   $shell_banner == *'Have a magical time ✧⋆｡˚'* &&
+   $shell_banner == *'__/_______\__'* &&
+   $shell_banner == *'*'* &&
+   $shell_banner != *'TW config'* ]] ||
+    fail 'Windows local shell did not show its status, selected SSH config, and wizard hat'
 [[ $(cat "$ssh_args_log") == $'-F\n'"$custom"$'\nwindows.example.invalid' ]] ||
     fail 'Windows-path local shell lost the selected -F SSH config'
 

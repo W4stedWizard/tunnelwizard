@@ -74,9 +74,12 @@ QUICK_NAMES=(one two three four five six seven eight nine ten)
 TERM_WIDTH=100
 QUICK_LAUNCH_ALT=yes
 footer=$(render_dashboard_shell_controls)
-[[ $footer == *'Alt+1–9 Open 10–18'* && $footer == *'? Help'* ]] ||
-    fail 'enabled Alt range/help hint was not visible in the wide dashboard footer'
+[[ $footer == *'Alt+1–9 Open 10–18'* && $footer != *'? Help'* ]] ||
+    fail 'dashboard quick-launch row showed an Alt hint incorrectly or duplicated Help'
 ((${#footer} <= TERM_WIDTH - 1)) || fail 'opt-in Alt footer exceeded the safe width'
+dashboard_footer="$footer$(render_dashboard_global_controls)"
+[[ $dashboard_footer == *'? Help'* && ${dashboard_footer#*'? Help'} != *'? Help'* ]] ||
+    fail 'dashboard footer did not show exactly one Help hint'
 QUICK_LAUNCH_ALT=no
 footer=$(render_dashboard_shell_controls)
 [[ $footer != *'Alt+1–9'* ]] || fail 'disabled Alt range was visible in the dashboard footer'
@@ -153,5 +156,29 @@ QUICK_LAUNCH_ALT=no
 HELP_RETURN_MODE=menu
 help_text=$(render_help)
 [[ $help_text != *'Alt+1–9'* ]] || fail 'disabled Alt shortcut was visible in help'
+
+# The selected marker is the only visual difference in the first row. Keep it
+# single-column so the first row's later cells line up with the rows below in
+# terminals that render ambiguous-width Unicode chevrons as double-width.
+QUICK_NAMES=(a bb cccccc)
+SHELL_SELECTION=0
+for TERM_WIDTH in 35 80; do
+    cell_width=$((TERM_WIDTH < 36 ? (TERM_WIDTH - 4) / 3 : (TERM_WIDTH - 7) / 3))
+    row=$(render_shell_row 0 3 "$cell_width")
+    [[ $row == *'>1 '* || $row == *'> 1 '* ]] ||
+        fail 'selected quick-launch marker was not the one-column ASCII marker'
+
+    if ((TERM_WIDTH < 36)); then
+        margin=1 gap=1 prefix_width=3
+    else
+        margin=2 gap=2 prefix_width=4
+    fi
+    for cell in 0 1 2; do
+        name_column=$((margin + cell * (cell_width + gap) + prefix_width))
+        expected_initial=${QUICK_NAMES[$cell]:0:1}
+        [[ ${row:name_column:1} == "$expected_initial" ]] ||
+            fail "quick-launch cell $((cell + 1)) name shifted at width $TERM_WIDTH"
+    done
+done
 
 printf 'Render capture fallback tests passed.\n'
