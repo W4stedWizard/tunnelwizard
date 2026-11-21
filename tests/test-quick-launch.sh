@@ -11,6 +11,7 @@ load_function move_shell_horizontal
 load_function move_shell_vertical
 load_function open_quick_window
 load_function colour
+load_function status_badge_palette
 load_function status_badge
 load_function stop_tunnels
 load_function kill_all_tunnels

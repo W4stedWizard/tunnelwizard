@@ -807,19 +807,29 @@ render_arrow_hint() {
     key_hint '↓'
 }
 
+status_badge_palette() {
+    case "$1" in
+        RUNNING)  printf '224 188 255 68 43 91' ;;
+        STARTING) printf '185 235 250 29 60 76' ;;
+        STOPPED)  printf '255 190 190 92 37 49' ;;
+        SKIPPED)  printf '255 222 165 89 67 36' ;;
+        PENDING)  printf '205 198 220 57 52 70' ;;
+        *) return 1 ;;
+    esac
+}
+
 status_badge() {
-    local status=$1 padded code
+    local status=$1 padded code palette
+    local fg_r fg_g fg_b bg_r bg_g bg_b
 
     printf -v padded ' %-9s' "$status"
 
-    case "$status" in
-        RUNNING)  code='38;2;224;188;255;48;2;68;43;91' ;;
-        STARTING) code='38;2;185;235;250;48;2;29;60;76' ;;
-        STOPPED)  code='38;2;255;190;190;48;2;92;37;49' ;;
-        SKIPPED)  code='38;2;255;222;165;48;2;89;67;36' ;;
-        PENDING)  code='38;2;205;198;220;48;2;57;52;70' ;;
-        *)        code='0' ;;
-    esac
+    if palette=$(status_badge_palette "$status"); then
+        read -r fg_r fg_g fg_b bg_r bg_g bg_b <<< "$palette"
+        code="38;2;${fg_r};${fg_g};${fg_b};48;2;${bg_r};${bg_g};${bg_b}"
+    else
+        code='0'
+    fi
 
     colour "$code" "$padded"
 }
@@ -974,8 +984,23 @@ begin_screen() {
     FORCE_REPAINT=0
 }
 
+shift_ui_line_left() {
+    local content=$1 prefix='' remainder=$1 sequence
+
+    # Keep any leading SGR styling attached while reducing the standard
+    # two-column UI indent to one column.
+    while [[ "$remainder" == $'\033['*m* ]]; do
+        sequence=${remainder%%m*}m
+        prefix+=$sequence
+        remainder=${remainder#"$sequence"}
+    done
+
+    [[ "$remainder" == '  '* ]] && remainder=${remainder:1}
+    printf '%s%s' "$prefix" "$remainder"
+}
+
 paint_row() {
-    local row=$1 content render_status=0
+    local row=$1 renderer=${2-} content render_status=0
     shift
 
     if [[ -n "$RENDER_CAPTURE_FILE" && -f "$RENDER_CAPTURE_FILE" &&
@@ -993,6 +1018,11 @@ paint_row() {
         else
             render_status=$?
         fi
+    fi
+    # The centered wizard-hat decoration keeps its exact center; shift the
+    # rest of the UI (body and fixed-footer rows) one column left.
+    if [[ "$renderer" != render_dashboard_hat_line ]]; then
+        content=$(shift_ui_line_left "$content")
     fi
     ROW_SEEN[$row]=1
 
@@ -1365,15 +1395,41 @@ render_tunnel_label() {
 
 render_tunnel_row() {
     local id=$1 label_width=$2 host_width=$3
-    local host
+    local host status=${STATUS[$id]} fade_width=0
+
+    # On wider terminals, let a purple circle fade lead directly into the
+    # status badge. Borrow two label-padding columns plus the normal separator
+    # so the badge stays aligned; keep the compact table untouched.
+    ((TERM_WIDTH >= 72)) && fade_width=2
 
     host=$(truncate_text "${SSH_HOST[$id]}" "$host_width")
 
     printf '  '
-    render_tunnel_label "$id" "$label_width"
-    printf '  '
-    status_badge "${STATUS[$id]}"
+    render_tunnel_label "$id" "$((label_width - fade_width))"
+    if ((fade_width > 0)); then
+        printf ' '
+        render_status_bleed "$status"
+    else
+        printf '  '
+    fi
+    status_badge "$status"
     printf '  %s' "$host"
+}
+
+render_status_bleed() {
+    local palette fg_r fg_g fg_b bg_r bg_g bg_b percent r g b
+    local status=$1
+    local -a percentages=(35 65 90)
+
+    palette=$(status_badge_palette "$status") || return 0
+    read -r fg_r fg_g fg_b bg_r bg_g bg_b <<< "$palette"
+
+    for percent in "${percentages[@]}"; do
+        r=$((fg_r * percent / 100))
+        g=$((fg_g * percent / 100))
+        b=$((fg_b * percent / 100))
+        colour "38;2;${r};${g};${b}" '·'
+    done
 }
 
 render_hidden_tunnels() {
@@ -1440,6 +1496,45 @@ dashboard_shell_count() {
     printf '%s' "$count"
 }
 
+render_dashboard_quick_launch_title() {
+    local title='  QUICK LAUNCH (TOP 9)'
+    [[ "$QUICK_LAUNCH_ALT" == yes ]] && title='  QUICK LAUNCH (TOP 18)'
+    colour '1' "$(truncate_text "$title" "$((TERM_WIDTH - 1))")"
+}
+
+render_dashboard_hat_line() {
+    local text=$1 left_padding=$2 padding
+    printf -v padding '%*s' "$left_padding" ''
+    colour '38;2;58;35;79' "$padding$text"
+}
+
+render_dashboard_gap_hat() {
+    local available_rows=$((BODY_LAST_ROW - BODY_ROW + 1))
+    local art_width=18 art_height=5 top_padding left_padding index
+    local -a hat=(
+        '          _.,_'
+        "      .-\`'_.-'\`\`-'"
+        "    .' * /"
+        '   /  *  |'
+        '__/_______\__'
+    )
+
+    # Keep the overlay out of the compact-width quick-launch fallback. Count
+    # rows after rendering the actual grid, so the optional 10–18 entries and
+    # any footer message automatically reduce the available space.
+    ((TERM_WIDTH >= 25 && available_rows >= art_height + 2)) || return 0
+
+    top_padding=$(((available_rows - art_height) / 2))
+    left_padding=$(((TERM_WIDTH - art_width) / 2))
+
+    for ((index = 0; index < top_padding; index++)); do
+        body_line :
+    done
+    for index in "${!hat[@]}"; do
+        body_line render_dashboard_hat_line "${hat[$index]}" "$left_padding"
+    done
+}
+
 render_dashboard() {
     local shell_count=${#QUICK_NAMES[@]}
     local top_count tunnel_count label_width host_width
@@ -1478,14 +1573,14 @@ render_dashboard() {
         body_line render_tunnel_heading "$label_width" "$host_width"
         body_line render_rule
 
-        # Two blank rows, a title, a rule, then the visible shortcut grid.
+        # One blank row, a title, a rule, then the visible shortcut grid.
         grid_lines=0
 
         if ((shell_count > 0)); then
             if ((TERM_WIDTH < 25)); then
-                grid_lines=5
+                grid_lines=4
             else
-                grid_lines=$((4 + (top_count + 2) / 3))
+                grid_lines=$((3 + (top_count + 2) / 3))
             fi
         fi
 
@@ -1513,12 +1608,7 @@ render_dashboard() {
 
     if ((shell_count > 0)); then
         body_line :
-        body_line :
-        if [[ "$QUICK_LAUNCH_ALT" == yes ]]; then
-            body_line print_clipped_line '  QUICK LAUNCH (TOP 18)'
-        else
-            body_line print_clipped_line '  QUICK LAUNCH (TOP 9)'
-        fi
+        body_line render_dashboard_quick_launch_title
         body_line render_rule
 
         if ((TERM_WIDTH < 25)); then
@@ -1536,6 +1626,8 @@ render_dashboard() {
                 body_line render_shell_row "$index" "$top_count" "$cell_width"
             done
         fi
+
+        render_dashboard_gap_hat
     fi
 
     render_dashboard_footer

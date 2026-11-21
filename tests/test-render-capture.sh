@@ -11,7 +11,10 @@ load_function() {
     source <(awk -v name="$1" '$0 == name "() {" { copying=1 } copying { print; if ($0 == "}") exit }' "$root/TW.sh")
 }
 for fn in render_footer_help_hint truncate_cell_name render_shell_cell render_shell_row \
-    dashboard_shell_count render_dashboard render_shell_menu \
+    shift_ui_line_left status_badge_palette status_badge render_tunnel_row \
+    render_status_bleed dashboard_shell_count \
+    render_dashboard_quick_launch_title render_dashboard_hat_line render_dashboard_gap_hat \
+    render_dashboard render_shell_menu \
     render_menu_controls_full render_menu_controls_short render_menu_return_hint \
     render_alias_return_hint render_hosts_return_controls render_hosts_controls \
     render_hosts_controls_return render_help; do
@@ -21,7 +24,13 @@ done
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 key_hint() { printf '%s' "$1"; }
 render_arrow_hint() { printf '←/→/↑/↓'; }
-colour() { printf '%s' "$2"; }
+colour() {
+    if [[ ${CAPTURE_COLOUR_STYLE:-no} == yes ]]; then
+        printf '<%s>%s' "$1" "$2"
+    else
+        printf '%s' "$2"
+    fi
+}
 print_clipped_line() { printf '%s' "${1:0:TERM_WIDTH-1}"; }
 QUICK_LAUNCH_ALT=no
 QUICK_NAMES=()
@@ -46,6 +55,13 @@ paint_row 1 render_test_row
 [[ "${ROW_CACHE[1]}" == 'fallback row' && "${ROW_SEEN[1]}" == 1 ]] ||
     fail 'row was not captured in memory when temp storage was unavailable'
 [[ "$RENDER_BUFFER" == *'fallback row'* ]] || fail 'fallback row was not queued for display'
+render_indented_test_row() { printf '  UI row'; }
+paint_row 2 render_indented_test_row
+[[ "${ROW_CACHE[2]}" == ' UI row' ]] ||
+    fail 'painted UI row was not shifted left by exactly one column'
+shifted_ansi_row=$(shift_ui_line_left $'\033[1m  styled row\033[0m')
+[[ $shifted_ansi_row == $'\033[1m styled row\033[0m' ]] ||
+    fail 'left shift did not preserve leading ANSI styling'
 
 for render_footer in \
     render_global_controls \
@@ -120,6 +136,48 @@ TUNNEL_IDS=()
 MESSAGE=''
 TERM_HEIGHT=40
 MENU_SCROLL=0
+
+# The quick-launch title remains text-clipped but receives bold styling.
+truncate_text() { printf '%s' "${1:0:$2}"; }
+TERM_WIDTH=80
+QUICK_LAUNCH_ALT=yes
+CAPTURE_COLOUR_STYLE=yes
+title=$(render_dashboard_quick_launch_title)
+CAPTURE_COLOUR_STYLE=no
+[[ $title == '<1>  QUICK LAUNCH (TOP 18)' ]] ||
+    fail 'quick-launch title was not bold or selected the wrong launch range'
+QUICK_LAUNCH_ALT=no
+
+# Small fade circles retain each status badge's foreground hue while growing
+# brighter toward the badge, rather than staying purple.
+CAPTURE_COLOUR_STYLE=yes
+stopped_badge=$(status_badge STOPPED)
+stopped_fade=$(render_status_bleed STOPPED)
+CAPTURE_COLOUR_STYLE=no
+[[ $stopped_badge == '<38;2;255;190;190;48;2;92;37;49> '* ]] ||
+    fail 'stopped badge did not use the expected status palette'
+[[ $stopped_fade == '<38;2;89;66;66>·<38;2;165;123;123>·<38;2;229;171;171>·' ]] ||
+    fail 'status fade circles did not retain and brighten the badge colour'
+
+# The fade uses existing label padding on wide terminals, keeping the status
+# column at the same position; compact widths omit it.
+render_tunnel_label() { printf '%-*s' "$2" 'label'; }
+status_badge() { printf '[%s]' "$1"; }
+declare -A SSH_HOST STATUS
+SSH_HOST[test]='example.test'
+STATUS[test]=RUNNING
+TERM_WIDTH=80
+wide_status_row=$(render_tunnel_row test 30 12)
+TERM_WIDTH=60
+compact_status_row=$(render_tunnel_row test 30 12)
+[[ $wide_status_row == *'···[RUNNING]'* && $compact_status_row != *'···'* ]] ||
+    fail 'small circle fade did not lead directly into the status badge only at wide layout'
+wide_badge_column=${wide_status_row%%\[*}
+compact_badge_column=${compact_status_row%%\[*}
+[[ ${#wide_badge_column} -eq ${#compact_badge_column} ]] ||
+    fail 'status fade shifted the table status column'
+
+QUICK_LAUNCH_ALT=yes
 for TERM_WIDTH in 25 35 36; do
     dashboard=$(render_dashboard)
     menu=$(render_shell_menu)
@@ -132,6 +190,71 @@ for TERM_WIDTH in 25 35 36; do
         ((${#line} <= TERM_WIDTH - 1)) || fail "dashboard/menu row overflowed at $TERM_WIDTH"
     done <<< "$dashboard"$'\n'"$menu"
 done
+
+# The tunnel list and quick-launch title are now separated by one blank row.
+QUICK_NAMES=(one two three)
+QUICK_LAUNCH_ALT=no
+TERM_HEIGHT=40
+TERM_WIDTH=80
+dashboard=$(render_dashboard)
+spacer_count=0
+in_quick_launch_gap=0
+while IFS= read -r line; do
+    if [[ $line == *'No port forwards configured.'* ]]; then
+        in_quick_launch_gap=1
+        continue
+    fi
+    if ((in_quick_launch_gap)); then
+        if [[ $line == *'QUICK LAUNCH'* ]]; then break; fi
+        [[ -z $line ]] && ((spacer_count += 1))
+    fi
+done <<< "$dashboard"
+((spacer_count == 1)) || fail "expected one blank row before quick launch, found $spacer_count"
+
+# The decorative hat fits only in a seven-row blank gap after quick launches.
+# The last-event message consumes a footer row, and bonus launches reduce the
+# gap by adding grid rows.
+TERM_WIDTH=80
+QUICK_NAMES=(one two three four five six seven eight nine)
+QUICK_LAUNCH_ALT=no
+TERM_HEIGHT=17
+dashboard=$(render_dashboard)
+[[ $dashboard != *'_.,_'* ]] || fail 'dashboard drew the hat in a six-row gap'
+TERM_HEIGHT=18
+dashboard=$(render_dashboard)
+[[ $dashboard == *'_.,_'* && $dashboard == *'__/_______\__'* ]] ||
+    fail 'dashboard did not draw the hat in a seven-row gap'
+hat_row=''
+while IFS= read -r line; do
+    if [[ $line == *'_.,_'* ]]; then hat_row=$line; break; fi
+done <<< "$dashboard"
+hat_prefix=${hat_row%%_.,_*}
+expected_hat_column=$(((TERM_WIDTH - 18) / 2 + 10))
+[[ ${#hat_prefix} -eq $expected_hat_column ]] ||
+    fail 'dashboard hat was not centered horizontally'
+
+MESSAGE='Tunnel stopped: 65022 : Mnemosyne SSH. Ctrl+R restarts all.'
+TERM_HEIGHT=18
+dashboard=$(render_dashboard)
+[[ $dashboard != *'_.,_'* ]] ||
+    fail 'dashboard drew the hat in space reserved for the last-event message'
+TERM_HEIGHT=19
+dashboard=$(render_dashboard)
+[[ $dashboard == *'_.,_'* ]] ||
+    fail 'last-event message did not leave the hat visible with seven blank rows'
+MESSAGE=''
+
+QUICK_NAMES=()
+for i in {1..18}; do QUICK_NAMES+=("Entry $i"); done
+QUICK_LAUNCH_ALT=yes
+TERM_HEIGHT=20
+dashboard=$(render_dashboard)
+[[ $dashboard != *'_.,_'* ]] ||
+    fail 'bonus quick launches did not reduce the available gap'
+TERM_HEIGHT=21
+dashboard=$(render_dashboard)
+[[ $dashboard == *'_.,_'* ]] ||
+    fail 'dashboard did not show the hat when the bonus-launch layout had seven blank rows'
 
 # Render contextual help through the same row callbacks, without a terminal.
 TERM_WIDTH=80
