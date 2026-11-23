@@ -1449,7 +1449,7 @@ render_hidden_tunnels() {
 
 render_shell_cell() {
     local index=$1 cell_width=$2
-    local marker=' ' hotkey=' ' name name_width padded_name prefix
+    local marker=' ' hotkey='  ' name name_width padded_name prefix
 
     if ((index == SHELL_SELECTION)); then
         # Keep the selected marker unambiguously one terminal column wide;
@@ -1458,7 +1458,8 @@ render_shell_cell() {
     fi
 
     if ((index < 9)); then
-        hotkey=$((index + 1))
+        # Keep the digit in the same column as the second character of A1..A9.
+        hotkey=" $((index + 1))"
     elif [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((index < 18)); then
         # A1..A9 are the compact cell labels for Alt+1..Alt+9.
         hotkey="A$((index - 8))"

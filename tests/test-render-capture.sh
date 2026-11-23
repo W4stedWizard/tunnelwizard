@@ -317,19 +317,39 @@ SHELL_SELECTION=0
 for TERM_WIDTH in 35 80; do
     cell_width=$((TERM_WIDTH < 36 ? (TERM_WIDTH - 4) / 3 : (TERM_WIDTH - 7) / 3))
     row=$(render_shell_row 0 3 "$cell_width")
-    [[ $row == *'>1 '* || $row == *'> 1 '* ]] ||
+    [[ $row == *'> 1 '* || $row == *'>  1 '* ]] ||
         fail 'selected quick-launch marker was not the one-column ASCII marker'
 
     if ((TERM_WIDTH < 36)); then
-        margin=1 gap=1 prefix_width=3
+        margin=1 gap=1 prefix_width=4
     else
-        margin=2 gap=2 prefix_width=4
+        margin=2 gap=2 prefix_width=5
     fi
     for cell in 0 1 2; do
         name_column=$((margin + cell * (cell_width + gap) + prefix_width))
         expected_initial=${QUICK_NAMES[$cell]:0:1}
         [[ ${row:name_column:1} == "$expected_initial" ]] ||
             fail "quick-launch cell $((cell + 1)) name shifted at width $TERM_WIDTH"
+    done
+done
+
+# The digits in 1/4/7 and their Alt variants A1/A4/A7 share a column in each
+# cell, in both compact and wide layouts.
+QUICK_NAMES=(alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo)
+QUICK_LAUNCH_ALT=yes
+SHELL_SELECTION=-1
+for TERM_WIDTH in 35 80; do
+    cell_width=$((TERM_WIDTH < 36 ? (TERM_WIDTH - 4) / 3 : (TERM_WIDTH - 7) / 3))
+    digit_column=$((TERM_WIDTH < 36 ? 2 : 3))
+    for column in 0 1 2; do
+        regular_index=$((column * 3))
+        alt_index=$((regular_index + 9))
+        regular_cell=$(render_shell_cell "$regular_index" "$cell_width")
+        alt_cell=$(render_shell_cell "$alt_index" "$cell_width")
+        expected_digit=$((regular_index + 1))
+        [[ ${regular_cell:digit_column:1} == "$expected_digit" &&
+           ${alt_cell:digit_column:1} == "$expected_digit" ]] ||
+            fail "quick-launch digit $expected_digit shifted between regular and Alt labels at width $TERM_WIDTH"
     done
 done
 
