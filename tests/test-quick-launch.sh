@@ -403,6 +403,25 @@ shell_banner=$(cat "$test_home/windows-shell-warning")
 [[ $(cat "$ssh_args_log") == $'-F\n'"$custom"$'\nwindows.example.invalid' ]] ||
     fail 'Windows-path local shell lost the selected -F SSH config'
 
+# Simulate Git Bash on Windows without a separate WSL `bash` on PATH. The
+# five-line local-shell banner should not depend on finding another Bash.
+mkdir -p "$test_home/windows-no-wsl-bin"
+cat >"$test_home/windows-no-wsl-bin/uname" <<'EOF'
+#!/bin/sh
+printf 'MINGW64_NT-10.0\n'
+EOF
+chmod +x "$test_home/windows-no-wsl-bin/uname"
+HOME="$test_home" PATH="$test_home/windows-no-wsl-bin:$test_home/bin:$PATH" \
+    SSH_ARGS_LOG="$ssh_args_log" \
+    "$real_bash" "$root/TW.sh" --local-shell --ssh-config-b64 "$encoded_custom" \
+    2>"$test_home/windows-no-wsl-shell-banner" <<< 'exit' >/dev/null ||
+    fail 'Windows local shell without a WSL bash failed to start'
+no_wsl_shell_banner=$(cat "$test_home/windows-no-wsl-shell-banner")
+[[ $no_wsl_shell_banner == *'✓ Using current Bash'* &&
+   $no_wsl_shell_banner == *'__/_______\__'* &&
+   $no_wsl_shell_banner == *'Have a magical time ✧⋆｡˚'* ]] ||
+    fail 'Windows local shell without a separate WSL bash omitted its startup banner'
+
 literal_command="printf '%s' 'literal; value'"
 encoded_command=$(printf '%s' "$literal_command" | base64 | tr -d '\r\n')
 actual=$(HOME="$test_home" bash "$root/TW.sh" --run-command-base64 \

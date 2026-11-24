@@ -335,10 +335,7 @@ if ((LOCAL_SHELL_MODE)); then
     local_shell_bash=$BASH
     case "$(uname -s)" in
         MINGW*|MSYS*|CYGWIN*)
-            path_bash=$(type -P bash 2>/dev/null || true)
-            if [[ -n "$path_bash" && "$path_bash" != "$BASH" ]]; then
-                print_local_shell_banner
-            fi
+            print_local_shell_banner
             ;;
     esac
 
