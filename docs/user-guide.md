@@ -162,6 +162,12 @@ weaken SSH's configured host-key policy. A changed host key is treated as a
 security warning and does not trigger the verification session. If a separate
 terminal cannot be opened, connect manually using SSH.
 
+An initial SSH startup failure shows the final line of its error log at the
+retry prompt. Enter `S` there to skip retry prompts for all remaining tunnels;
+already-running tunnels are left running. If a tunnel exits after startup, the
+dashboard currently reports its name and that `Ctrl+R` restarts all tunnels;
+the runtime notification does not include the SSH error detail.
+
 ### Local hostnames and Windows hosts file
 
 The Windows hosts-file integration is Windows-only. Configured local hostnames
@@ -226,14 +232,15 @@ expanded **when the command runs**, not when the config loads. Entries appear
 in declaration order, mixing shells and commands in the first nine dashboard
 shortcuts and the complete `S` menu. Plain `1`–`9` open entries 1–9. Add
 `quick_launch_alt yes` to enable `Alt+1`–`Alt+9` for entries 10–18 (shown as
-`A1`–`A9` in the menu); the default is `no`. All later entries remain available
-with arrows and Enter in the full `S` menu. Terminal Alt+digit normally sends
-Escape followed by the digit; terminals that bind Alt+digits themselves may
-need that binding disabled. Ctrl+digit is not used because its legacy encodings
-can collide with control keys. Commands do not become tracked tunnel processes.
+`A1`–`A9` in the Shells menu); the default is `no`. All later entries remain
+available with arrows and Enter in the full Shells menu. Terminal Alt+digit
+normally sends Escape followed by the digit; terminals that bind Alt+digits
+themselves may need that binding disabled. Ctrl+digit is not used because its
+legacy encodings can collide with control keys. Commands do not become tracked
+tunnel processes.
 See [`tunnels.conf.example`](../tunnels.conf.example).
 
-Press `?` on the dashboard, quick-launch menu, aliases page, or hosts page for
+Press `?` on the dashboard, Shells menu, aliases page, or hosts page for
 shortcuts specific to that screen. Press `?`, Esc, or Q to close help and return
 to the same selection and scroll position. `Ctrl+R` restarts the tunnels and
 `Ctrl+C` exits from any page, including help.

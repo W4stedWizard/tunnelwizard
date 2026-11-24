@@ -5,10 +5,10 @@ forwards, launch saved SSH sessions, and open local commands—all from one
 lightweight Bash interface.
 
 <p align="center">
-  <img width="922" height="560" alt="TunnelWizard dashboard with three tunnels, two local hostnames, nine quick launches, and the wizard-hat decoration" src="tests/assets/tunnelwizard-home-demo.svg" />
+  <img width="922" height="560" alt="Borderless TunnelWizard dashboard showing three tunnels, HTTP and HTTPS hostnames, nine quick launches, and the centered wizard-hat decoration" src="tests/assets/tunnelwizard-home-demo.svg" />
 </p>
 
-<p align="center"><em>96×28 demo from the example config. The status badges are simulated locally; no SSH connection or hosts-file change is made.</em></p>
+<p align="center"><em>96×28 dashboard from the example config, including HTTP on port 80 and HTTPS on 443. Status badges are simulated locally; no SSH connection or hosts-file change is made.</em></p>
 
 ## What it does
 
@@ -47,10 +47,10 @@ custom_command DISPLAY_NAME LOCAL_BASH_COMMAND
 
 Each tunnel belongs to the most recent machine. A local hostname gives a
 forward its own loopback address; **the forward specifies the port**. For
-example, use `443:127.0.0.1:443 api.demo.test` to reach a TLS service at
-`https://api.demo.test`. Binding ports below 1024 may require elevated
-privileges. See [`tunnels.conf.example`](tunnels.conf.example) for a complete
-dashboard demo.
+plain HTTP, use `80:127.0.0.1:80 api.demo.test` and open
+`http://api.demo.test`; for TLS, use `443:127.0.0.1:443` and `https://`.
+Binding ports below 1024 may require elevated privileges. See
+[`tunnels.conf.example`](tunnels.conf.example) for a complete dashboard demo.
 
 ## Explore more
 

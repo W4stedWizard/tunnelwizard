@@ -477,6 +477,7 @@ KEY=""
 
 STOPPING=0
 EXIT_REQUESTED=0
+SKIP_ALL_STARTUP_RETRIES=0
 REDRAW_NEEDED=1
 FORCE_REPAINT=1
 RESIZE_EVENT=0
@@ -1172,171 +1173,149 @@ render_message() {
 }
 
 render_global_controls() {
-    local full='  N Local shell    A Aliases    K Kill tunnels    H  Hosts    Ctrl+R  Restart tunnels    Ctrl+C  Stop and exit'
-    local compact='  N Shell  A Aliases  K Kill  H Hosts  ^R Restart  ^C Exit'
+    local layout
+    layout=$(dashboard_controls_layout)
+    if [[ "$layout" == full ]]; then
+        render_dashboard_controls_full
+    else
+        render_dashboard_controls_compact
+    fi
+}
 
-    if ((TERM_WIDTH <= ${#full})); then
-        if ((TERM_WIDTH <= ${#compact} + 1)); then
-            printf '  '
-            key_hint 'N'
-            printf ' '
-            key_hint 'A'
-            printf ' '
-            key_hint 'K'
-            printf ' '
-            key_hint 'H'
-            printf ' '
-            key_hint '^R'
-            printf ' '
-            key_hint '^C'
-            render_footer_help_hint 17
-            return
+dashboard_controls_layout() {
+    local row_one='  ' row_two='  A Aliases  H Hosts  ^R Restart  ^C Stop and exit  ? Help'
+    local full
+
+    if ((${#QUICK_NAMES[@]} > 0)); then
+        row_one+='1–9 Open instantly'
+        if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)); then
+            row_one+='  [A]1–9 Open 10–18'
         fi
-        printf '  '
-        key_hint 'N'
-        printf ' Shell  '
-        key_hint 'A'
-        printf ' Aliases  '
-        key_hint 'K'
-        printf ' Kill  '
-        key_hint 'H'
-        printf ' Hosts  '
-        key_hint '^R'
-        printf ' Restart  '
-        key_hint '^C'
-        printf ' Exit'
-        render_footer_help_hint "${#compact}"
-        return
+        row_one+=' S Shells K Stop tunnels N Local shell'
+    else
+        row_one+='K Stop tunnels N Local shell'
     fi
 
+    full="$row_one   ${row_two#  }"
+    if ((TERM_WIDTH > ${#full})); then
+        printf 'full'
+    elif ((TERM_WIDTH > ${#row_one} && TERM_WIDTH > ${#row_two})); then
+        printf 'rows'
+    else
+        printf 'short'
+    fi
+}
+
+render_dashboard_controls_row_one() {
     printf '  '
-    key_hint 'N'
-    printf ' Local shell    '
-    key_hint 'A'
-    printf ' Aliases    '
+    if ((${#QUICK_NAMES[@]} > 0)); then
+        key_hint '1–9'
+        printf ' Open instantly'
+        if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)); then
+            printf '  '
+            key_hint '[A]1–9'
+            printf ' Open 10–18'
+        fi
+        printf ' '
+        key_hint 'S'
+        printf ' Shells '
+    fi
     key_hint 'K'
-    printf ' Kill tunnels    '
+    printf ' Stop tunnels '
+    key_hint 'N'
+    printf ' Local shell'
+}
+
+render_dashboard_controls_row_two() {
+    local indent=${1:-yes}
+    [[ "$indent" == yes ]] && printf '  '
+    key_hint 'A'
+    printf ' Aliases  '
     key_hint 'H'
-    printf '  Hosts    '
-    key_hint 'Ctrl+R'
-    printf '  Restart tunnels    '
-    key_hint 'Ctrl+C'
-    printf '  Stop and exit'
-    render_footer_help_hint "${#full}"
+    printf ' Hosts  '
+    key_hint '^R'
+    printf ' Restart  '
+    key_hint '^C'
+    printf ' Stop and exit  '
+    key_hint '?'
+    printf ' Help'
+}
+
+render_dashboard_controls_full() {
+    render_dashboard_controls_row_one
+    printf '   '
+    render_dashboard_controls_row_two no
+}
+
+render_dashboard_controls_compact() {
+    local -a keys=()
+    local key index raw=''
+
+    if ((${#QUICK_NAMES[@]} > 0)); then
+        if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)); then
+            if ((TERM_WIDTH >= 29)); then
+                keys=('1–9' '[A]1–9' S K N A H '^R' '^C' '?')
+            elif ((TERM_WIDTH >= 25)); then
+                keys=('[A]1–9' S K N A H '^R' '^C' '?')
+            else
+                keys=('[A]1–9' S K N A H '^R')
+            fi
+        elif ((TERM_WIDTH >= 22)); then
+            keys=('1–9' S K N A H '^R' '^C' '?')
+        else
+            keys=('1–9' S K N A H '^R' '^C')
+        fi
+    else
+        keys=(K N A H '^R' '^C' '?')
+    fi
+
+    for index in "${!keys[@]}"; do
+        key=${keys[$index]}
+        ((index > 0)) && raw+='/'
+        raw+="$key"
+    done
+    if ((TERM_WIDTH > ${#raw} + 2)); then printf '  '; fi
+    for index in "${!keys[@]}"; do
+        ((index > 0)) && printf '/'
+        key_hint "${keys[$index]}"
+    done
 }
 
 render_dashboard_shell_controls() {
-    local full='  1–9 Open instantly    ←/→/↑/↓ Navigate    Enter Open'
-    local compact='  1–9 Open  ↑↓←→ Move  Enter Open'
-    local alt_hint='  Alt+1–9 Open 10–18'
-    local shown_width
-
-    if ((TERM_WIDTH > ${#full})); then
-        printf '  '
-        key_hint '1–9'
-        printf ' Open instantly    '
-        render_arrow_hint
-        printf ' Navigate    '
-        key_hint 'Enter'
-        printf ' Open'
-        shown_width=${#full}
-        if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)) &&
-           ((TERM_WIDTH > shown_width + ${#alt_hint})); then
-            key_hint '  Alt+1–9'
-            printf ' Open 10–18'
-        fi
-    else
-        printf '  '
-        if ((TERM_WIDTH <= ${#compact} + 1)); then
-            key_hint '1–9'
-            printf ' '
-            key_hint '↑↓←→'
-            printf ' '
-            key_hint 'Enter'
-        else
-            key_hint '1–9'
-            printf ' Open '
-            key_hint '↑↓←→'
-            printf ' Move '
-            key_hint 'Enter'
-            printf ' Open'
-        fi
-    fi
+    local layout
+    layout=$(dashboard_controls_layout)
+    case "$layout" in
+        full) render_dashboard_controls_full ;;
+        rows) render_dashboard_controls_row_one ;;
+        short) render_dashboard_controls_compact ;;
+    esac
 }
 
 render_dashboard_global_controls() {
-    local full='  S  Quick launch    N  Local shell    A  Aliases    K  Kill tunnels    H  Hosts    Ctrl+R  Restart    Ctrl+C  Stop and exit'
-    local compact='  S Launch  N Shell  A Aliases  K Kill  H Hosts  ^R Restart  ^C Exit'
-
-    if ((TERM_WIDTH <= ${#full})); then
-        if ((TERM_WIDTH <= ${#compact} + 1)); then
-            printf '  '
-            key_hint 'S'
-            printf ' '
-            key_hint 'N'
-            printf ' '
-            key_hint 'A'
-            printf ' '
-            key_hint 'K'
-            printf ' '
-            key_hint 'H'
-            printf ' '
-            key_hint '^R'
-            printf ' '
-            key_hint '^C'
-            render_footer_help_hint 19
-            return
-        fi
-        printf '  '
-        key_hint 'S'
-        printf ' Launch  '
-        key_hint 'N'
-        printf ' Shell  '
-        key_hint 'A'
-        printf ' Aliases  '
-        key_hint 'K'
-        printf ' Kill  '
-        key_hint 'H'
-        printf ' Hosts  '
-        key_hint '^R'
-        printf ' Restart  '
-        key_hint '^C'
-        printf ' Exit'
-        render_footer_help_hint "${#compact}"
-        return
+    if [[ $(dashboard_controls_layout) == rows ]]; then
+        render_dashboard_controls_row_two
     fi
-
-    printf '  '
-    key_hint 'S'
-    printf '  Quick launch    '
-    key_hint 'N'
-    printf '  Local shell    '
-    key_hint 'A'
-    printf '  Aliases    '
-    key_hint 'K'
-    printf '  Kill tunnels    '
-    key_hint 'H'
-    printf '  Hosts    '
-    key_hint 'Ctrl+R'
-    printf '  Restart    '
-    key_hint 'Ctrl+C'
-    printf '  Stop and exit'
-    render_footer_help_hint "${#full}"
+    return 0
 }
 
 render_dashboard_footer() {
-    if ((${#QUICK_NAMES[@]} > 0)); then
-        if [[ -n "$MESSAGE" ]]; then
-            footer_at "$((TERM_HEIGHT - 2))" render_message
-        fi
+    local layout
+    layout=$(dashboard_controls_layout)
 
-        footer_at "$((TERM_HEIGHT - 1))" render_dashboard_shell_controls
-        footer_at "$TERM_HEIGHT" render_dashboard_global_controls
-    else
-        if [[ -n "$MESSAGE" ]]; then
+    if [[ -n "$MESSAGE" ]]; then
+        if [[ "$layout" == rows ]]; then
+            footer_at "$((TERM_HEIGHT - 2))" render_message
+        else
             footer_at "$((TERM_HEIGHT - 1))" render_message
         fi
+    fi
 
+    if [[ "$layout" == rows ]]; then
+        footer_at "$((TERM_HEIGHT - 1))" render_dashboard_controls_row_one
+        footer_at "$TERM_HEIGHT" render_dashboard_controls_row_two
+    elif ((${#QUICK_NAMES[@]} > 0)); then
+        footer_at "$TERM_HEIGHT" render_dashboard_shell_controls
+    else
         footer_at "$TERM_HEIGHT" render_global_controls
     fi
 }
@@ -1448,10 +1427,10 @@ render_hidden_tunnels() {
 }
 
 render_shell_cell() {
-    local index=$1 cell_width=$2
+    local index=$1 cell_width=$2 show_selection=${3:-yes}
     local marker=' ' hotkey='  ' name name_width padded_name prefix
 
-    if ((index == SHELL_SELECTION)); then
+    if [[ "$show_selection" == yes ]] && ((index == SHELL_SELECTION)); then
         # Keep the selected marker unambiguously one terminal column wide;
         # Unicode width for the previous chevron varies by terminal/locale.
         marker='>'
@@ -1473,7 +1452,7 @@ render_shell_cell() {
     name=$(truncate_cell_name "${QUICK_NAMES[$index]}" "$name_width")
     printf -v padded_name '%-*s' "$name_width" "$name"
 
-    if ((index == SHELL_SELECTION)); then
+    if [[ "$show_selection" == yes ]] && ((index == SHELL_SELECTION)); then
         # Dark-grey background (#4B4B52), with purple selection accents.
         colour '1;38;2;184;127;242;48;2;75;75;82' "$prefix$padded_name"
     else
@@ -1483,6 +1462,7 @@ render_shell_cell() {
 
 render_shell_row() {
     local first=$1 count=$2 cell_width=$3
+    local show_selection=${4:-yes}
     local index margin='  ' gap='  '
 
     if ((TERM_WIDTH < 36)); then
@@ -1496,7 +1476,7 @@ render_shell_row() {
             printf '%s' "$gap"
         fi
 
-        render_shell_cell "$index" "$cell_width"
+        render_shell_cell "$index" "$cell_width" "$show_selection"
     done
 }
 
@@ -1551,13 +1531,10 @@ render_dashboard() {
     local shell_count=${#QUICK_NAMES[@]}
     local top_count tunnel_count label_width host_width
     local grid_lines available_tunnel_rows visible_tunnels hidden_tunnels
-    local cell_width index id footer_rows
+    local cell_width index id footer_rows footer_layout
 
-    if ((shell_count > 0)); then
-        footer_rows=2
-    else
-        footer_rows=1
-    fi
+    footer_layout=$(dashboard_controls_layout)
+    if [[ "$footer_layout" == rows ]]; then footer_rows=2; else footer_rows=1; fi
 
     if [[ -n "$MESSAGE" ]]; then
         footer_rows=$((footer_rows + 1))
@@ -1635,7 +1612,7 @@ render_dashboard() {
             fi
 
             for ((index = 0; index < top_count; index += 3)); do
-                body_line render_shell_row "$index" "$top_count" "$cell_width"
+                body_line render_shell_row "$index" "$top_count" "$cell_width" no
             done
         fi
 
@@ -1725,7 +1702,7 @@ render_shell_menu() {
 
     body_line render_header_line
     body_line :
-    body_line print_clipped_line '  QUICK LAUNCH · SSH SHELLS & LOCAL COMMANDS'
+    body_line print_clipped_line '  SHELLS · SSH SESSIONS & LOCAL COMMANDS'
     body_line render_rule
 
     # The full S menu includes connections after #9.
@@ -2120,21 +2097,20 @@ render_help() {
         dashboard)
             body_line print_clipped_line '  HELP · DASHBOARD'
             body_line render_rule
-            body_line print_clipped_line '  1–9  Open the first nine quick-launch entries'
+            body_line print_clipped_line '  1–9  Open the first nine entries instantly'
             if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)); then
-                body_line print_clipped_line '  Alt+1–9  Open entries 10–18 (A1–A9 in the menu)'
+                body_line print_clipped_line '  [A]1–9  Open entries 10–18 instantly (Alt+1–9)'
             fi
-            body_line print_clipped_line '  Arrows  Select quick entry · Enter  Open selected'
-            body_line print_clipped_line '  S  Full quick-launch menu · N  New local SSH-configured shell'
+            body_line print_clipped_line '  S  Shells menu (all entries) · N  New local SSH-configured shell'
             body_line print_clipped_line '  A  Bash aliases · K  Stop tunnels'
             body_line print_clipped_line '  H  Windows hosts (requires hosts_management yes)'
             ;;
         menu)
-            body_line print_clipped_line '  HELP · QUICK LAUNCH'
+            body_line print_clipped_line '  HELP · SHELLS'
             body_line render_rule
-            body_line print_clipped_line '  1–9  Open the first nine entries'
+            body_line print_clipped_line '  1–9  Open the first nine entries instantly'
             if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)); then
-                body_line print_clipped_line '  Alt+1–9  Open entries 10–18 (A1–A9 in the grid)'
+                body_line print_clipped_line '  [A]1–9  Open entries 10–18 instantly (Alt+1–9)'
             fi
             body_line print_clipped_line '  Arrows  Navigate all entries · Enter  Open selected'
             body_line print_clipped_line '  Esc/Q  Return to dashboard'
@@ -2438,7 +2414,7 @@ start_with_retry() {
         printf '  Check VPN/network settings, authentication, and the local port.\n\n'
 
         answer=""
-        read -r -p '  Retry? [y/N] ' answer <&3 || true
+        read -r -p '  Retry? [y/N/s=skip all remaining] ' answer <&3 || true
         ((EXIT_REQUESTED)) && return
 
         printf '\033[?25l'
@@ -2447,6 +2423,12 @@ start_with_retry() {
 
         case "$answer" in
             y|Y|yes|YES) pid="" ;;
+            s|S)
+                SKIP_ALL_STARTUP_RETRIES=1
+                STATUS["$id"]="SKIPPED"
+                render_dashboard
+                return
+                ;;
             *)
                 STATUS["$id"]="SKIPPED"
                 render_dashboard
@@ -2454,6 +2436,31 @@ start_with_retry() {
                 ;;
         esac
     done
+}
+
+start_or_skip_startup_tunnel() {
+    local id=$1 pid=$2 index
+
+    if ((SKIP_ALL_STARTUP_RETRIES)); then
+        if kill -0 "$pid" 2>/dev/null; then
+            # Earlier tunnel retry was declined globally; keep healthy tunnels.
+            STATUS["$id"]="RUNNING"
+        else
+            wait "$pid" 2>/dev/null || true
+            for index in "${!PIDS[@]}"; do
+                if [[ "${PIDS[$index]}" == "$pid" ]]; then
+                    unset "PIDS[$index]"
+                    break
+                fi
+            done
+            unset "PID_TO_TUNNEL[$pid]"
+            STATUS["$id"]="SKIPPED"
+        fi
+        render_dashboard
+        return
+    fi
+
+    start_with_retry "$id" "$pid"
 }
 
 poll_tunnel_processes() {
@@ -2985,6 +2992,60 @@ handle_ui_key() {
     return 1
 }
 
+handle_dashboard_key() {
+    local index
+
+    case "$KEY" in
+        k|K)
+            kill_all_tunnels
+            ;;
+        n|N)
+            open_local_shell_window || true
+            REDRAW_NEEDED=1
+            ;;
+        a|A)
+            UI_MODE=aliases
+            ALIAS_SELECTION=0
+            ALIAS_SCROLL=0
+            if alias_profile_read; then MESSAGE=""; else MESSAGE=$ALIAS_ERROR; fi
+            REDRAW_NEEDED=1
+            ;;
+        h|H)
+            if [[ "$HOSTS_MANAGEMENT" != yes ]]; then
+                MESSAGE='Hosts UI disabled. Add hosts_management yes to this config to opt in.'
+            elif ! is_windows_shell; then
+                MESSAGE='Automatic hosts management is Windows-only; add aliases manually.'
+            elif ! command -v powershell.exe >/dev/null 2>&1 ||
+                 ! command -v cygpath >/dev/null 2>&1 ||
+                 ! command -v readlink >/dev/null 2>&1 ||
+                 [[ ! -r "$SCRIPT_DIR/hosts-manager.ps1" ]]; then
+                MESSAGE='Windows hosts helper, PowerShell, cygpath or readlink unavailable.'
+            else
+                UI_MODE="hosts"
+                MESSAGE=""
+                check_hosts_presence || true
+            fi
+            REDRAW_NEEDED=1
+            ;;
+        s|S)
+            if ((${#QUICK_NAMES[@]} > 0)); then
+                UI_MODE="menu"
+                SHELL_SELECTION=0
+                MENU_SCROLL=0
+                MESSAGE=""
+                REDRAW_NEEDED=1
+            fi
+            ;;
+        [1-9])
+            index=$((KEY - 1))
+            if ((index < ${#QUICK_NAMES[@]})); then
+                open_quick_window "$index" || true
+                REDRAW_NEEDED=1
+            fi
+            ;;
+    esac
+}
+
 read_key() {
     local first="" next="" timeout=${1:-0.1}
     local i
@@ -3409,7 +3470,7 @@ if ((${#TUNNEL_IDS[@]} > 0)); then
     ((EXIT_REQUESTED)) && exit 130
 
     for id in "${TUNNEL_IDS[@]}"; do
-        start_with_retry "$id" "${STARTUP_PIDS[$id]}"
+        start_or_skip_startup_tunnel "$id" "${STARTUP_PIDS[$id]}"
         ((EXIT_REQUESTED)) && exit 130
     done
 fi
@@ -3489,74 +3550,7 @@ while true; do
                 ;;
         esac
     elif [[ "$UI_MODE" == dashboard ]]; then
-        case "$KEY" in
-            k|K)
-                kill_all_tunnels
-                ;;
-            n|N)
-                open_local_shell_window || true
-                REDRAW_NEEDED=1
-                ;;
-            a|A)
-                UI_MODE=aliases
-                ALIAS_SELECTION=0
-                ALIAS_SCROLL=0
-                if alias_profile_read; then MESSAGE=""; else MESSAGE=$ALIAS_ERROR; fi
-                REDRAW_NEEDED=1
-                ;;
-            h|H)
-                if [[ "$HOSTS_MANAGEMENT" != yes ]]; then
-                    MESSAGE='Hosts UI disabled. Add hosts_management yes to this config to opt in.'
-                elif ! is_windows_shell; then
-                    MESSAGE='Automatic hosts management is Windows-only; add aliases manually.'
-                elif ! command -v powershell.exe >/dev/null 2>&1 ||
-                     ! command -v cygpath >/dev/null 2>&1 ||
-                     ! command -v readlink >/dev/null 2>&1 ||
-                     [[ ! -r "$SCRIPT_DIR/hosts-manager.ps1" ]]; then
-                    MESSAGE='Windows hosts helper, PowerShell, cygpath or readlink unavailable.'
-                else
-                    UI_MODE="hosts"
-                    MESSAGE=""
-                    check_hosts_presence || true
-                fi
-                REDRAW_NEEDED=1
-                ;;
-            s|S)
-                if ((${#QUICK_NAMES[@]} > 0)); then
-                    UI_MODE="menu"
-                    SHELL_SELECTION=0
-                    MENU_SCROLL=0
-                    MESSAGE=""
-                    REDRAW_NEEDED=1
-                fi
-                ;;
-            UP)
-                move_shell_vertical -1 "$(dashboard_shell_count)"
-                ;;
-            DOWN)
-                move_shell_vertical 1 "$(dashboard_shell_count)"
-                ;;
-            LEFT)
-                move_shell_horizontal -1 "$(dashboard_shell_count)"
-                ;;
-            RIGHT)
-                move_shell_horizontal 1 "$(dashboard_shell_count)"
-                ;;
-            ENTER)
-                if ((${#QUICK_NAMES[@]} > 0)); then
-                    open_quick_window "$SHELL_SELECTION" || true
-                    REDRAW_NEEDED=1
-                fi
-                ;;
-            [1-9])
-                index=$((KEY - 1))
-                if ((index < ${#QUICK_NAMES[@]})); then
-                    SHELL_SELECTION=$index
-                    open_quick_window "$index" || true
-                    REDRAW_NEEDED=1
-                fi
-                ;;
-        esac
+        handle_dashboard_key
     else
         case "$KEY" in
             UP)

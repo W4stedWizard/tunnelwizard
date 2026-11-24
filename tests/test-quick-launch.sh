@@ -23,7 +23,10 @@ load_function spawn_wezterm
 load_function open_local_shell_window
 load_function print_local_shell_banner
 load_function handle_ui_key
+load_function handle_dashboard_key
 load_function read_key
+load_function start_with_retry
+load_function start_or_skip_startup_tunnel
 SCRIPT_DIR=$root
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -133,10 +136,62 @@ quick_launch_alt yes
 handle_ui_key || fail 'dashboard Alt+1 was not consumed'
 [[ $selected == command:9 && $SHELL_SELECTION -eq 2 ]] ||
     fail 'dashboard Alt+1 did not open entry 10 or changed its top-nine selection'
+selected=unchanged
+for dashboard_nav_key in UP DOWN LEFT RIGHT ENTER; do
+    KEY=$dashboard_nav_key
+    handle_dashboard_key
+done
+[[ $selected == unchanged && $SHELL_SELECTION -eq 2 ]] ||
+    fail 'dashboard navigation moved or opened the invisible selection cursor'
+KEY=3
+handle_dashboard_key
+[[ $selected == ssh:1 && $SHELL_SELECTION -eq 2 ]] ||
+    fail 'dashboard 1–9 shortcut did not open instantly without moving menu selection'
 UI_MODE=aliases
 selected=unchanged
 handle_ui_key && fail 'Alt+1 should not launch from aliases'
 [[ $selected == unchanged ]] || fail 'Alt+1 launched from aliases'
+
+# A failed tunnel can set the skip-all flag; subsequent healthy startup
+# processes stay running while subsequent failed ones are marked skipped.
+retry_log_dir="$test_home/retry-logs"
+mkdir -p "$retry_log_dir"
+LOG_DIR=$retry_log_dir
+STARTUP_WAIT=0
+EXIT_REQUESTED=0
+SKIP_ALL_STARTUP_RETRIES=0
+sleep() { :; }
+render_dashboard() { :; }
+render_header() { :; }
+restore_tty_mode() { :; }
+set_tty_mode() { :; }
+classify_host_key_failure() { printf 'none'; }
+kill() { return 1; }
+wait() { :; }
+PIDS=(701)
+declare -A STATUS PID_TO_TUNNEL
+STATUS[retry]=STARTING
+LABEL[retry]='retry'
+PID_TO_TUNNEL[701]=retry
+exec 3< <(printf 's\n')
+start_with_retry retry 701 >/dev/null
+exec 3<&-
+[[ $SKIP_ALL_STARTUP_RETRIES -eq 1 && ${STATUS[retry]} == SKIPPED &&
+   ${#PIDS[@]} -eq 0 && -z ${PID_TO_TUNNEL[701]:-} ]] ||
+    fail 'skip-all retry choice did not skip and reap the failed tunnel'
+
+SKIP_ALL_STARTUP_RETRIES=1
+PIDS=(801 802)
+STATUS[healthy]=STARTING
+STATUS[failed]=STARTING
+PID_TO_TUNNEL[801]=healthy
+PID_TO_TUNNEL[802]=failed
+kill() { [[ ${1:-} == -0 && ${2:-} == 801 ]]; }
+start_or_skip_startup_tunnel healthy 801
+start_or_skip_startup_tunnel failed 802
+[[ ${STATUS[healthy]} == RUNNING && ${STATUS[failed]} == SKIPPED &&
+   -z ${PID_TO_TUNNEL[802]:-} ]] ||
+    fail 'skip-all incorrectly stopped a healthy tunnel or left a failed tunnel uncollected'
 parse_cli_args --run-command-base64 ZWNobyBoZWxsbw==
 [[ $COMMAND_MODE -eq 1 && $COMMAND_B64 == ZWNobyBoZWxsbw== ]] || fail 'command transport not parsed'
 if parse_cli_args --run-command-base64 ZWNobyBoZWxsbw== --ssh-config x 2>/dev/null; then

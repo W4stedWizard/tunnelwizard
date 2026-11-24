@@ -12,9 +12,11 @@ load_function() {
 }
 for fn in render_footer_help_hint truncate_cell_name render_shell_cell render_shell_row \
     shift_ui_line_left status_badge_palette status_badge render_tunnel_row \
-    render_status_bleed dashboard_shell_count \
+    render_status_bleed dashboard_shell_count dashboard_controls_layout \
+    render_dashboard_controls_row_one render_dashboard_controls_row_two \
+    render_dashboard_controls_full render_dashboard_controls_compact \
     render_dashboard_quick_launch_title render_dashboard_hat_line render_dashboard_gap_hat \
-    render_dashboard render_shell_menu \
+    render_dashboard_footer render_message render_dashboard render_shell_menu \
     render_menu_controls_full render_menu_controls_short render_menu_return_hint \
     render_alias_return_hint render_hosts_return_controls render_hosts_controls \
     render_hosts_controls_return render_help; do
@@ -107,15 +109,20 @@ QUICK_NAMES=(one two three four five six seven eight nine ten)
 TERM_WIDTH=100
 QUICK_LAUNCH_ALT=yes
 footer=$(render_dashboard_shell_controls)
-[[ $footer == *'Alt+1–9 Open 10–18'* && $footer != *'? Help'* ]] ||
-    fail 'dashboard quick-launch row showed an Alt hint incorrectly or duplicated Help'
+[[ $footer == *'[A]1–9 Open 10–18'* && $footer != *'? Help'* ]] ||
+    fail 'dashboard quick-select row omitted its Alt hint or duplicated Help'
 ((${#footer} <= TERM_WIDTH - 1)) || fail 'opt-in Alt footer exceeded the safe width'
 dashboard_footer="$footer$(render_dashboard_global_controls)"
 [[ $dashboard_footer == *'? Help'* && ${dashboard_footer#*'? Help'} != *'? Help'* ]] ||
     fail 'dashboard footer did not show exactly one Help hint'
+TERM_WIDTH=150
+dashboard_footer=$(render_dashboard_shell_controls)
+[[ $dashboard_footer == *'S Shells'* && $dashboard_footer == *'A Aliases'* &&
+   $dashboard_footer == *'? Help'* ]] ||
+    fail 'wide dashboard did not combine all controls into one row'
 QUICK_LAUNCH_ALT=no
 footer=$(render_dashboard_shell_controls)
-[[ $footer != *'Alt+1–9'* ]] || fail 'disabled Alt range was visible in the dashboard footer'
+[[ $footer != *'[A]1–9'* ]] || fail 'disabled Alt range was visible in the dashboard footer'
 
 for TERM_WIDTH in 25 29 35 36 80; do
     QUICK_NAMES=('A very long first name' 'A very long second name' 'A very long third name')
@@ -146,13 +153,33 @@ footer_at() { shift; "$@"; printf '\n'; }
 finish_screen() { :; }
 render_header_line() { :; }
 render_rule() { :; }
-render_dashboard_footer() { :; }
 render_menu_footer() { :; }
 ensure_terminal_size() { :; }
 TUNNEL_IDS=()
 MESSAGE=''
 TERM_HEIGHT=40
 MENU_SCROLL=0
+
+# Empty quick-launch grids still use the same responsive control grouping.
+QUICK_NAMES=()
+for width_layout in '20:short' '55:short' '80:rows' '140:full'; do
+    TERM_WIDTH=${width_layout%%:*}
+    expected_layout=${width_layout#*:}
+    [[ $(dashboard_controls_layout) == "$expected_layout" ]] ||
+        fail "empty dashboard controls chose the wrong layout at width $TERM_WIDTH"
+    footer=$(render_dashboard_footer)
+    mapfile -t footer_lines <<< "$footer"
+    expected_lines=1
+    [[ $expected_layout == rows ]] && expected_lines=2
+    ((${#footer_lines[@]} == expected_lines)) ||
+        fail "empty dashboard footer rendered ${#footer_lines[@]} rows at width $TERM_WIDTH"
+    for line in "${footer_lines[@]}"; do
+        ((${#line} <= TERM_WIDTH - 1)) ||
+            fail "empty dashboard footer overflowed at width $TERM_WIDTH"
+    done
+done
+QUICK_NAMES=()
+for i in {1..21}; do QUICK_NAMES+=("Entry number $i with a long label"); done
 
 # The quick-launch title remains text-clipped but receives bold styling.
 truncate_text() { printf '%s' "${1:0:$2}"; }
@@ -291,8 +318,11 @@ for context in dashboard menu aliases hosts; do
     HELP_RETURN_MODE=$context
     help_text=$(render_help)
     case "$context" in
-        dashboard) [[ $help_text == *'N  New local SSH-configured shell'* && $help_text == *'Alt+1–9'* ]] ;;
-        menu) [[ $help_text == *'Navigate all entries'* && $help_text == *'Alt+1–9'* ]] ;;
+        dashboard) [[ $help_text == *'N  New local SSH-configured shell'* &&
+                      $help_text == *'[A]1–9'* &&
+                      $help_text == *'S  Shells menu (all entries)'* ]] ;;
+        menu) [[ $help_text == *'HELP · SHELLS'* && $help_text == *'Navigate all entries'* &&
+                 $help_text == *'[A]1–9'* ]] ;;
         aliases) [[ $help_text == *'I  Import'* && $help_text == *'C  Clear all managed aliases'* ]] ;;
         hosts) [[ $help_text == *'Ctrl+D  Delete all TunnelWizard hosts blocks'* ]] ;;
     esac || fail "$context help is missing relevant shortcuts"
@@ -303,22 +333,22 @@ QUICK_NAMES=(one two three four five six seven eight nine)
 QUICK_LAUNCH_ALT=yes
 HELP_RETURN_MODE=dashboard
 help_text=$(render_help)
-[[ $help_text != *'Alt+1–9'* ]] || fail 'help showed Alt shortcuts without entries 10–18'
+[[ $help_text != *'[A]1–9'* ]] || fail 'help showed Alt shortcuts without entries 10–18'
 QUICK_LAUNCH_ALT=no
 HELP_RETURN_MODE=menu
 help_text=$(render_help)
-[[ $help_text != *'Alt+1–9'* ]] || fail 'disabled Alt shortcut was visible in help'
+[[ $help_text != *'[A]1–9'* ]] || fail 'disabled Alt shortcut was visible in help'
 
-# The selected marker is the only visual difference in the first row. Keep it
-# single-column so the first row's later cells line up with the rows below in
-# terminals that render ambiguous-width Unicode chevrons as double-width.
+# The dashboard has no selection cursor; the Shells menu retains the marker.
 QUICK_NAMES=(a bb cccccc)
 SHELL_SELECTION=0
 for TERM_WIDTH in 35 80; do
     cell_width=$((TERM_WIDTH < 36 ? (TERM_WIDTH - 4) / 3 : (TERM_WIDTH - 7) / 3))
-    row=$(render_shell_row 0 3 "$cell_width")
-    [[ $row == *'> 1 '* || $row == *'>  1 '* ]] ||
-        fail 'selected quick-launch marker was not the one-column ASCII marker'
+    row=$(render_shell_row 0 3 "$cell_width" no)
+    [[ $row != *'>'* ]] || fail 'dashboard quick-launch grid drew a selection cursor'
+    menu_row=$(render_shell_row 0 3 "$cell_width")
+    [[ $menu_row == *'>  1 '* || $menu_row == *'> 1 '* ]] ||
+        fail 'Shells menu lost its selected marker'
 
     if ((TERM_WIDTH < 36)); then
         margin=1 gap=1 prefix_width=4

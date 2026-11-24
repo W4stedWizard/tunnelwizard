@@ -27,10 +27,11 @@ quick_launch_alt no
 # Dashboard demo: three tunnels, two configured local hostnames, and nine
 # quick-launch SSH shells. The .test names are config-only; no system DNS or
 # hosts-file entries are installed by this example.
-# Both local hostnames can use port 443 because each gets its own loopback IP;
-# binding ports below 1024 may require elevated privileges on some systems.
+# The first named tunnel demonstrates plain HTTP on port 80; the second uses
+# HTTPS on port 443. Each hostname gets its own loopback IP. Binding ports
+# below 1024 may require elevated privileges on some systems.
 machine demo-api api-gateway.example.invalid alice ~/.ssh/id_ed25519 no
-tunnel "API Gateway" 443:127.0.0.1:443 api.demo.test
+tunnel "API Gateway" 80:127.0.0.1:80 api.demo.test
 
 machine demo-console admin-console.example.invalid alice ~/.ssh/id_ed25519 no
 tunnel "Admin Console" 443:127.0.0.1:443 admin.demo.test
