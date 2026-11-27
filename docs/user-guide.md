@@ -317,6 +317,13 @@ A custom WezTerm Lua config is optional. If you use one, you can keep
 `tunnels.lua` in the project folder and pass it with `--config-file`.
 Otherwise, omit that option to use your normal WezTerm configuration.
 
+With the included config, TunnelWizard-created shell windows keep the `✦`
+prefix while following the active pane's reported title—for example, an
+application title of `OpenCode` appears as `✦ OpenCode`. This uses WezTerm's
+[`format-window-title` hook](https://wezterm.org/config/lua/window-events/format-window-title.html);
+if you use your own config instead, include the same hook there to get live
+title formatting.
+
 See the official [WezTerm configuration files documentation](https://wezterm.org/config/files.html)
 for the Lua config format.
 

@@ -13,6 +13,7 @@ load_function() {
 for fn in render_footer_help_hint truncate_cell_name render_shell_cell render_shell_row \
     shift_ui_line_left status_badge_palette status_badge render_tunnel_row \
     render_status_bleed dashboard_shell_count dashboard_controls_layout \
+    quick_launch_range_key render_quick_launch_hint \
     render_dashboard_controls_row_one render_dashboard_controls_row_two \
     render_dashboard_controls_full render_dashboard_controls_compact \
     render_dashboard_quick_launch_title render_dashboard_hat_line render_dashboard_gap_hat \
@@ -24,6 +25,22 @@ for fn in render_footer_help_hint truncate_cell_name render_shell_cell render_sh
 done
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+assert_single_quick_launch_hint() {
+    local rendered=$1 expected=$2 remainder
+    local plain='1-9 Open/Run' alt='[A]1-9 Open/Run'
+    remainder=$rendered
+    if [[ $expected == '[A]1-9' ]]; then
+        [[ $remainder == *"$alt"* ]] ||
+            fail "rendered controls omitted the '$alt' hint"
+        remainder=${remainder/"$alt"/}
+    else
+        [[ $remainder == *"$plain"* ]] ||
+            fail "rendered controls omitted the '$plain' hint"
+        remainder=${remainder/"$plain"/}
+    fi
+    [[ $remainder != *"$plain"* && $remainder != *"$alt"* ]] ||
+        fail 'rendered controls showed more than one quick-launch hint'
+}
 key_hint() { printf '%s' "$1"; }
 render_arrow_hint() { printf '←/→/↑/↓'; }
 colour() {
@@ -109,12 +126,19 @@ QUICK_NAMES=(one two three four five six seven eight nine ten)
 TERM_WIDTH=100
 QUICK_LAUNCH_ALT=yes
 footer=$(render_dashboard_shell_controls)
-[[ $footer == *'[A]1–9 Open 10–18'* && $footer != *'? Help'* ]] ||
-    fail 'dashboard quick-select row omitted its Alt hint or duplicated Help'
+assert_single_quick_launch_hint "$footer" '[A]1-9'
+[[ $footer != *'? Help'* ]] || fail 'dashboard quick-select row duplicated Help'
 ((${#footer} <= TERM_WIDTH - 1)) || fail 'opt-in Alt footer exceeded the safe width'
 dashboard_footer="$footer$(render_dashboard_global_controls)"
 [[ $dashboard_footer == *'? Help'* && ${dashboard_footer#*'? Help'} != *'? Help'* ]] ||
     fail 'dashboard footer did not show exactly one Help hint'
+TERM_WIDTH=100
+footer=$(render_menu_controls_full)
+assert_single_quick_launch_hint "$footer" '[A]1-9'
+TERM_WIDTH=30
+footer=$(render_menu_controls_short)
+assert_single_quick_launch_hint "$footer" '[A]1-9'
+TERM_WIDTH=100
 TERM_WIDTH=150
 dashboard_footer=$(render_dashboard_shell_controls)
 [[ $dashboard_footer == *'S Shells'* && $dashboard_footer == *'A Aliases'* &&
@@ -122,7 +146,7 @@ dashboard_footer=$(render_dashboard_shell_controls)
     fail 'wide dashboard did not combine all controls into one row'
 QUICK_LAUNCH_ALT=no
 footer=$(render_dashboard_shell_controls)
-[[ $footer != *'[A]1–9'* ]] || fail 'disabled Alt range was visible in the dashboard footer'
+assert_single_quick_launch_hint "$footer" '1-9'
 
 for TERM_WIDTH in 25 29 35 36 80; do
     QUICK_NAMES=('A very long first name' 'A very long second name' 'A very long third name')
@@ -319,10 +343,10 @@ for context in dashboard menu aliases hosts; do
     help_text=$(render_help)
     case "$context" in
         dashboard) [[ $help_text == *'N  New local SSH-configured shell'* &&
-                      $help_text == *'[A]1–9'* &&
+                      $help_text == *'[A]1-9'* &&
                       $help_text == *'S  Shells menu (all entries)'* ]] ;;
         menu) [[ $help_text == *'HELP · SHELLS'* && $help_text == *'Navigate all entries'* &&
-                 $help_text == *'[A]1–9'* ]] ;;
+                  $help_text == *'[A]1-9'* ]] ;;
         aliases) [[ $help_text == *'I  Import'* && $help_text == *'C  Clear all managed aliases'* ]] ;;
         hosts) [[ $help_text == *'Ctrl+D  Delete all TunnelWizard hosts blocks'* ]] ;;
     esac || fail "$context help is missing relevant shortcuts"
@@ -333,11 +357,24 @@ QUICK_NAMES=(one two three four five six seven eight nine)
 QUICK_LAUNCH_ALT=yes
 HELP_RETURN_MODE=dashboard
 help_text=$(render_help)
-[[ $help_text != *'[A]1–9'* ]] || fail 'help showed Alt shortcuts without entries 10–18'
+assert_single_quick_launch_hint "$help_text" '1-9'
+[[ $help_text != *'[A]1-9'* ]] || fail 'help showed Alt shortcuts without entries 10–18'
 QUICK_LAUNCH_ALT=no
 HELP_RETURN_MODE=menu
 help_text=$(render_help)
-[[ $help_text != *'[A]1–9'* ]] || fail 'disabled Alt shortcut was visible in help'
+assert_single_quick_launch_hint "$help_text" '1-9'
+[[ $help_text != *'[A]1-9'* ]] || fail 'disabled Alt shortcut was visible in help'
+
+QUICK_NAMES=(one two three four five six seven eight nine ten)
+QUICK_LAUNCH_ALT=yes
+footer=$(render_dashboard_shell_controls)
+assert_single_quick_launch_hint "$footer" '[A]1-9'
+HELP_RETURN_MODE=dashboard
+help_text=$(render_help)
+assert_single_quick_launch_hint "$help_text" '[A]1-9'
+HELP_RETURN_MODE=menu
+help_text=$(render_help)
+assert_single_quick_launch_hint "$help_text" '[A]1-9'
 
 # The dashboard has no selection cursor; the Shells menu retains the marker.
 QUICK_NAMES=(a bb cccccc)

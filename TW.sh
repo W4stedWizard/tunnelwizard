@@ -1169,6 +1169,19 @@ render_message() {
     fi
 }
 
+quick_launch_range_key() {
+    if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)); then
+        printf '[A]1-9'
+    else
+        printf '1-9'
+    fi
+}
+
+render_quick_launch_hint() {
+    key_hint "$(quick_launch_range_key)"
+    printf ' Open/Run'
+}
+
 render_global_controls() {
     local layout
     layout=$(dashboard_controls_layout)
@@ -1181,13 +1194,11 @@ render_global_controls() {
 
 dashboard_controls_layout() {
     local row_one='  ' row_two='  A Aliases  H Hosts  ^R Restart  ^C Stop and exit  ? Help'
-    local full
+    local full launch_key
 
     if ((${#QUICK_NAMES[@]} > 0)); then
-        row_one+='1–9 Open instantly'
-        if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)); then
-            row_one+='  [A]1–9 Open 10–18'
-        fi
+        launch_key=$(quick_launch_range_key)
+        row_one+="$launch_key Open/Run"
         row_one+=' S Shells K Stop tunnels N Local shell'
     else
         row_one+='K Stop tunnels N Local shell'
@@ -1206,13 +1217,7 @@ dashboard_controls_layout() {
 render_dashboard_controls_row_one() {
     printf '  '
     if ((${#QUICK_NAMES[@]} > 0)); then
-        key_hint '1–9'
-        printf ' Open instantly'
-        if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)); then
-            printf '  '
-            key_hint '[A]1–9'
-            printf ' Open 10–18'
-        fi
+        render_quick_launch_hint
         printf ' '
         key_hint 'S'
         printf ' Shells '
@@ -1246,21 +1251,22 @@ render_dashboard_controls_full() {
 
 render_dashboard_controls_compact() {
     local -a keys=()
-    local key index raw=''
+    local key index raw='' launch_key
 
     if ((${#QUICK_NAMES[@]} > 0)); then
+        launch_key=$(quick_launch_range_key)
         if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)); then
             if ((TERM_WIDTH >= 29)); then
-                keys=('1–9' '[A]1–9' S K N A H '^R' '^C' '?')
+                keys=("$launch_key" S K N A H '^R' '^C' '?')
             elif ((TERM_WIDTH >= 25)); then
-                keys=('[A]1–9' S K N A H '^R' '^C' '?')
+                keys=("$launch_key" S K N A H '^R' '^C' '?')
             else
-                keys=('[A]1–9' S K N A H '^R')
+                keys=("$launch_key" S K N A H '^R')
             fi
         elif ((TERM_WIDTH >= 22)); then
-            keys=('1–9' S K N A H '^R' '^C' '?')
+            keys=("$launch_key" S K N A H '^R' '^C' '?')
         else
-            keys=('1–9' S K N A H '^R' '^C')
+            keys=("$launch_key" S K N A H '^R' '^C')
         fi
     else
         keys=(K N A H '^R' '^C' '?')
@@ -1621,7 +1627,7 @@ render_dashboard() {
 }
 
 render_menu_footer() {
-    local full='  1–9 Open instantly    ←/→/↑/↓ Navigate    Enter Open    Esc/Q Return'
+    local full="  $(quick_launch_range_key) Open/Run    ←/→/↑/↓ Navigate    Enter Open    Esc/Q Return"
 
     if ((TERM_WIDTH > ${#full})); then
         if [[ -n "$MESSAGE" ]]; then
@@ -1638,10 +1644,10 @@ render_menu_footer() {
 }
 
 render_menu_controls_full() {
-    local full='  1–9 Open instantly    ←/→/↑/↓ Navigate    Enter Open    Esc/Q Return'
+    local full="  $(quick_launch_range_key) Open/Run    ←/→/↑/↓ Navigate    Enter Open    Esc/Q Return"
     printf '  '
-    key_hint '1–9'
-    printf ' Open instantly    '
+    render_quick_launch_hint
+    printf '    '
     render_arrow_hint
     printf ' Navigate    '
     key_hint 'Enter'
@@ -1654,11 +1660,16 @@ render_menu_controls_full() {
 }
 
 render_menu_controls_short() {
+    local launch_key
+    launch_key=$(quick_launch_range_key)
     printf '  '
-    key_hint '1–9'
-    if ((TERM_WIDTH >= 31)); then printf ' Open '; else printf ' '; fi
-    key_hint '↑↓←→'
-    if ((TERM_WIDTH >= 31)); then printf ' Navigate'; fi
+    key_hint "$launch_key"
+    printf ' Open/Run'
+    if ((TERM_WIDTH >= 26)); then
+        printf ' '
+        key_hint '↑↓←→'
+    fi
+    if ((TERM_WIDTH >= 35)); then printf ' Navigate'; fi
 }
 
 render_menu_return_hint() {
@@ -1680,7 +1691,7 @@ render_menu_return_hint() {
 
 render_shell_menu() {
     local count=${#QUICK_NAMES[@]}
-    local full='  1–9 Open instantly    ←/→/↑/↓ Navigate    Enter Open    Esc/Q Return'
+    local full="  $(quick_launch_range_key) Open/Run    ←/→/↑/↓ Navigate    Enter Open    Esc/Q Return"
     local cell_width grid_rows total_lines available selected_line
     local max_scroll line grid_row footer_rows
 
@@ -2087,6 +2098,9 @@ render_hosts_controls_return() {
 }
 
 render_help() {
+    local launch_key
+    launch_key=$(quick_launch_range_key)
+
     begin_screen 1
     body_line render_header_line
     body_line :
@@ -2094,10 +2108,7 @@ render_help() {
         dashboard)
             body_line print_clipped_line '  HELP · DASHBOARD'
             body_line render_rule
-            body_line print_clipped_line '  1–9  Open the first nine entries instantly'
-            if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)); then
-                body_line print_clipped_line '  [A]1–9  Open entries 10–18 instantly (Alt+1–9)'
-            fi
+            body_line print_clipped_line "  $launch_key Open/Run"
             body_line print_clipped_line '  S  Shells menu (all entries) · N  New local SSH-configured shell'
             body_line print_clipped_line '  A  Bash aliases · K  Stop tunnels'
             body_line print_clipped_line '  H  Windows hosts (requires hosts_management yes)'
@@ -2105,10 +2116,7 @@ render_help() {
         menu)
             body_line print_clipped_line '  HELP · SHELLS'
             body_line render_rule
-            body_line print_clipped_line '  1–9  Open the first nine entries instantly'
-            if [[ "$QUICK_LAUNCH_ALT" == yes ]] && ((${#QUICK_NAMES[@]} > 9)); then
-                body_line print_clipped_line '  [A]1–9  Open entries 10–18 instantly (Alt+1–9)'
-            fi
+            body_line print_clipped_line "  $launch_key Open/Run"
             body_line print_clipped_line '  Arrows  Navigate all entries · Enter  Open selected'
             body_line print_clipped_line '  Esc/Q  Return to dashboard'
             ;;
